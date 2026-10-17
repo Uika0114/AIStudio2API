@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -227,7 +226,7 @@ func (s *server) handleGeminiModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := make([]map[string]any, 0, len(models))
-	for _, model := range models {
+	for _, model := range publicModelCatalog(models) {
 		data = append(data, geminiModelObject(model))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": data})
@@ -313,6 +312,11 @@ func (s *server) handleGeminiAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	generateRequest, err := request.toGenerateRequest(newID("resp"), model)
+	if err != nil {
+		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	generateRequest, err = normalizeRoutedModel(generateRequest)
 	if err != nil {
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		return
@@ -965,7 +969,7 @@ func geminiPromptFeedback(request aistudio.GenerateRequest, err error) (map[stri
 	if feedback.Message != "" {
 		block["blockReasonMessage"] = feedback.Message
 	}
-	return map[string]any{"promptFeedback": block, "modelVersion": request.Model, "responseId": request.ID}, true
+	return map[string]any{"promptFeedback": block, "modelVersion": requestedPublicModel(request), "responseId": request.ID}, true
 }
 
 // buildGeminiResponse 按候选序号输出各候选内容与终止原因，用量为全部候选之和
@@ -981,10 +985,10 @@ func buildGeminiResponse(request aistudio.GenerateRequest, results []generationR
 	}
 	response := map[string]any{
 		"candidates":   candidates,
-		"modelVersion": request.Model,
+		"modelVersion": requestedPublicModel(request),
 		"responseId":   request.ID,
 	}
-	if results[0].providerModel != "" {
+	if results[0].providerModel != "" && !request.Selection.Strict() {
 		response["modelVersion"] = results[0].providerModel
 	}
 	if usage := sumUsage(results); usage != nil {
@@ -1367,7 +1371,7 @@ func (s *server) streamGemini(w http.ResponseWriter, r *http.Request, request ai
 			if candidate == nil {
 				return nil
 			}
-			return write(map[string]any{"responseId": request.ID, "modelVersion": cmp.Or(event.ProviderModel, request.Model), "candidates": []any{candidate}})
+			return write(map[string]any{"responseId": request.ID, "modelVersion": generationResponseModel(request, event.ProviderModel), "candidates": []any{candidate}})
 		}, heartbeat)
 	})
 	if err != nil {
@@ -1385,8 +1389,8 @@ func (s *server) streamGemini(w http.ResponseWriter, r *http.Request, request ai
 		return
 	}
 	candidates.record(r.Context(), results)
-	model := request.Model
-	if results[0].providerModel != "" {
+	model := requestedPublicModel(request)
+	if results[0].providerModel != "" && !request.Selection.Strict() {
 		model = results[0].providerModel
 	}
 	finished := make([]any, 0, len(results))

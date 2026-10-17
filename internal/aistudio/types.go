@@ -249,6 +249,9 @@ type GenerateRequest struct {
 	Config    GenerationConfig `json:"config,omitempty"`
 	Tools     Tools            `json:"tools,omitempty"`
 	AccountID string           `json:"account_id,omitempty"`
+	// Selection preserves the public model identity and immutable routing policy.
+	// It is internal metadata, not a second client-controlled routing interface.
+	Selection ModelSelection `json:"-"`
 	// SafetySettings 覆盖对应类别的拦截阈值，未列出的类别保持关闭
 	SafetySettings []SafetySetting `json:"safety_settings,omitempty"`
 	// ImageRoute 内部标记：图像生成模型（由模型目录能力推导）
@@ -278,17 +281,26 @@ type TokenCount struct {
 
 // Model 表示实时模型目录中的模型
 type Model struct {
-	ID                string              `json:"id"`
-	Name              string              `json:"name"`
-	Description       string              `json:"description,omitempty"`
-	Methods           []string            `json:"methods"`
-	InputTokenLimit   int64               `json:"input_token_limit,omitempty"`
-	OutputTokenLimit  int64               `json:"output_token_limit,omitempty"`
-	Capabilities      map[string]bool     `json:"capabilities,omitempty"`
-	CapabilityOptions map[string][]string `json:"capability_options,omitempty"`
-	AccessModes       []int64             `json:"access_modes,omitempty"`
-	Paid              bool                `json:"paid,omitempty"`
-	Channels          []string            `json:"channels,omitempty"`
+	// BaseModel is provenance for public aliases, not a separate quota identity.
+	BaseModel          string                       `json:"base_model,omitempty"`
+	ID                 string                       `json:"id"`
+	Name               string                       `json:"name"`
+	Description        string                       `json:"description,omitempty"`
+	Methods            []string                     `json:"methods"`
+	InputTokenLimit    int64                        `json:"input_token_limit,omitempty"`
+	OutputTokenLimit   int64                        `json:"output_token_limit,omitempty"`
+	Capabilities       map[string]bool              `json:"capabilities,omitempty"`
+	CapabilityOptions  map[string][]string          `json:"capability_options,omitempty"`
+	AccessModes        []int64                      `json:"access_modes,omitempty"`
+	Paid               bool                         `json:"paid,omitempty"`
+	Channels           []string                     `json:"channels,omitempty"`
+	ChannelTokenLimits map[Channel]ModelTokenLimits `json:"-"`
+}
+
+// ModelTokenLimits carries channel-native catalog evidence; zero is unknown.
+type ModelTokenLimits struct {
+	Input  int64
+	Output int64
 }
 
 // Usage 表示一次生成的 token 用量，CachedTokens 是 InputTokens 中命中上游缓存的部分
@@ -300,6 +312,8 @@ type Usage struct {
 	ToolTokens          int64 `json:"tool_tokens,omitempty"`
 	TotalTokens         int64 `json:"total_tokens"`
 	OutputTokensMissing bool  `json:"-"`
+	// Source distinguishes authoritative upstream reports from local estimates.
+	Source string `json:"-"`
 }
 
 // Citation 表示模型返回的来源
@@ -387,8 +401,10 @@ type Event struct {
 	FinishMessage       string               `json:"finish_message,omitempty"`
 	StopSequence        string               `json:"stop_sequence,omitempty"`
 	ProviderModel       string               `json:"provider_model,omitempty"`
-	ThoughtSignature    string               `json:"thought_signature,omitempty"`
-	Err                 error                `json:"-"`
+	// Channel is internal actual-origin metadata, never a second client selector.
+	Channel          Channel `json:"-"`
+	ThoughtSignature string  `json:"thought_signature,omitempty"`
+	Err              error   `json:"-"`
 }
 
 // Service 定义公开协议适配器依赖的最小能力

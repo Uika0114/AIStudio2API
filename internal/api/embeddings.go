@@ -71,6 +71,10 @@ func (s *server) handleOpenAIEmbeddings(w http.ResponseWriter, r *http.Request) 
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}
+	if err := rejectRoutedModel(model); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	inputs, err := openAIEmbeddingInputs(request.Input)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -124,6 +128,10 @@ func embeddingBase64(values []float64) string {
 
 // handleGeminiEmbed 处理 Gemini embedContent 与 batchEmbedContents，两者都以 batchEmbedContents 经 Build 通道发送
 func (s *server) handleGeminiEmbed(w http.ResponseWriter, r *http.Request, model string, batch bool) {
+	if err := rejectRoutedModel(model); err != nil {
+		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	body, err := io.ReadAll(r.Body)
 	if err == nil {
 		body, _, err = geminiCamelKeys(body)

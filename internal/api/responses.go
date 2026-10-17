@@ -95,6 +95,7 @@ type responseState struct {
 // responseRecord 是 Responses 接口保存的响应对象、输入项与输出项
 type responseRecord struct {
 	Model      string
+	Channel    string
 	Shell      json.RawMessage
 	Input      []storedItem
 	Output     []storedItem
@@ -115,6 +116,7 @@ const responseStateCapacity = 256
 type responseHistory struct {
 	ID                 string
 	Model              string
+	Channel            string
 	Interaction        bool
 	Contents           []aistudio.Content
 	InlineInstructions []string
@@ -139,6 +141,7 @@ func (store *responseStateStore) Load(id string) (responseHistory, bool) {
 		history.Interaction = state.Interaction != nil
 		if state.Record != nil {
 			history.Model = state.Record.Model
+			history.Channel = state.Record.Channel
 		}
 	}
 	chain := make([]responseState, 0)
@@ -339,7 +342,7 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if request.Model == "" {
+	if request.Model == "" && request.PreviousResponseID == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}
@@ -376,7 +379,7 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	generateRequest := prepared.generate
 	generateRequest.Unary = !request.Stream
-	events, err := s.service.Generate(r.Context(), generateRequest)
+	events, err := s.generateWithHistory(r.Context(), generateRequest)
 	if err == nil && request.Stream {
 		events, err = awaitStreamStart(r.Context(), events)
 	}
@@ -465,22 +468,33 @@ func (s *server) prepareResponses(ctx context.Context, request *responsesRequest
 		generate: generateRequest, contents: cloneResponseContents(generateRequest.Contents),
 		inlineInstructions: append([]string(nil), inlineInstructions...), input: responsesInputItems(request.Input, id),
 	}
-	if request.PreviousResponseID == "" {
-		return prepared, nil
+	if request.PreviousResponseID != "" {
+		previous, ok := s.responseStates.Load(request.PreviousResponseID)
+		if !ok || previous.Interaction {
+			return responsesPreparation{}, fmt.Errorf("previous response %q was not found", request.PreviousResponseID)
+		}
+		prepared.previous = previous
+		prepared.generate.Contents = append(cloneResponseContents(previous.Contents), generateRequest.Contents...)
+		inlineInstructions = append(append([]string(nil), previous.InlineInstructions...), inlineInstructions...)
+		instructions := make([]string, 0, 1+len(inlineInstructions))
+		if request.Instructions != "" {
+			instructions = append(instructions, request.Instructions)
+		}
+		instructions = append(instructions, inlineInstructions...)
+		prepared.generate.System = strings.Join(instructions, "\n")
 	}
-	previous, ok := s.responseStates.Load(request.PreviousResponseID)
-	if !ok || previous.Interaction {
-		return responsesPreparation{}, fmt.Errorf("previous response %q was not found", request.PreviousResponseID)
+	// 续接未指定模型时继承前序响应的公开模型，保持通道前缀不丢回 auto。
+	if prepared.generate.Model == "" && prepared.previous.Model != "" {
+		prepared.generate.Model = prepared.previous.Model
+		request.Model = prepared.previous.Model
 	}
-	prepared.previous = previous
-	prepared.generate.Contents = append(cloneResponseContents(previous.Contents), generateRequest.Contents...)
-	inlineInstructions = append(append([]string(nil), previous.InlineInstructions...), inlineInstructions...)
-	instructions := make([]string, 0, 1+len(inlineInstructions))
-	if request.Instructions != "" {
-		instructions = append(instructions, request.Instructions)
+	prepared.generate, err = normalizeRoutedModel(prepared.generate)
+	if err != nil {
+		return responsesPreparation{}, err
 	}
-	instructions = append(instructions, inlineInstructions...)
-	prepared.generate.System = strings.Join(instructions, "\n")
+	if err := crossChannelOpaqueStateError(prepared.previous, prepared.generate.Selection); err != nil {
+		return responsesPreparation{}, err
+	}
 	return prepared, nil
 }
 
@@ -494,7 +508,7 @@ func (s *server) storeResponse(id string, request responsesRequest, prepared res
 	shell := maps.Clone(response)
 	delete(shell, "output")
 	encoded, _ := json.Marshal(shell)
-	record := &responseRecord{Model: request.Model, Shell: encoded, Input: prepared.input, Background: request.Background, Stream: prepared.stream}
+	record := &responseRecord{Model: requestedPublicModel(prepared.generate), Channel: string(result.channel), Shell: encoded, Input: prepared.input, Background: request.Background, Stream: prepared.stream}
 	for _, item := range response["output"].([]any) {
 		object, _ := item.(map[string]any)
 		if itemID, _ := object["id"].(string); itemID != "" {

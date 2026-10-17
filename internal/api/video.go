@@ -87,6 +87,10 @@ type openAIVideoRequest struct {
 }
 
 func (s *server) handleGeminiVideoCreate(w http.ResponseWriter, r *http.Request, model string) {
+	if err := rejectRoutedModel(model); err != nil {
+		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	service, ok := s.service.(aistudio.VideoService)
 	if !ok {
 		writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "video generation is unavailable")
@@ -334,6 +338,9 @@ func (request openAIVideoRequest) toVideoRequest(image *aistudio.VideoImage) (ai
 	}
 	if strings.TrimSpace(request.Model) == "" {
 		return aistudio.VideoRequest{}, fmt.Errorf("model is required")
+	}
+	if err := rejectRoutedModel(request.Model); err != nil {
+		return aistudio.VideoRequest{}, err
 	}
 	duration := 0
 	if request.Seconds != "" {

@@ -105,9 +105,19 @@ func NewWorkerProtectedTransport(options WorkerProtectedTransportOptions) (*Work
 }
 
 // DoProtected 写入 fresh proof 后通过 Camoufox 发送 GenerateContent 或 Build 代理请求
-func (t *WorkerProtectedTransport) DoProtected(ctx context.Context, request GenerateRequest, rpc RPCRequest) (*RPCResponse, error) {
+func (t *WorkerProtectedTransport) DoProtected(ctx context.Context, request GenerateRequest, rpc RPCRequest) (response *RPCResponse, err error) {
+	ctx, attempt := beginPhysicalAttempt(ctx, request, rpc)
+	defer func() {
+		if err != nil {
+			attempt.fail(err)
+		} else {
+			response = attempt.attach(response)
+		}
+	}()
+	if err = request.Selection.ValidateChannel(generationRPCChannel(rpc.Method)); err != nil {
+		return nil, err
+	}
 	var prompt, page string
-	var err error
 	proofField := 5
 	if rpc.Method == buildProxyStreamedMethod || rpc.Method == buildProxyUnaryMethod {
 		prompt, err = buildBindingPrompt(rpc.Body)
@@ -123,6 +133,7 @@ func (t *WorkerProtectedTransport) DoProtected(ctx context.Context, request Gene
 	modelID := strings.TrimPrefix(strings.TrimSpace(request.Model), "models/")
 	return t.doBrowserPrepared(ctx, prompt, page, proofField, AccountSelection{
 		ModelID: modelID, Method: "generateContent", AccountID: strings.TrimSpace(request.AccountID),
+		Channel: request.Selection.Channel, StrictChannel: request.Selection.Strict(),
 	}, rpc)
 }
 
@@ -152,6 +163,7 @@ func (t *WorkerProtectedTransport) doBrowserPrepared(
 		return nil, ErrAccountCoolingDown
 	}
 	reportRequestPhase(ctx, RequestPhaseSendingUpstream)
+	markPhysicalSend(ctx)
 	response, err := worker.SendProtected(ctx, ProtectedRequest{
 		URL: rpc.URL, Headers: headers, Body: rpc.Body,
 	})
@@ -233,6 +245,7 @@ func (t *WorkerProtectedTransport) doPrepared(
 		return nil, err
 	}
 	reportRequestPhase(ctx, RequestPhaseSendingUpstream)
+	markPhysicalSend(ctx)
 	response, err := t.transport.Do(ctx, rpc)
 	if err != nil {
 		return nil, err
@@ -617,6 +630,11 @@ func (s *PooledService) CountTokens(ctx context.Context, request TokenCountReque
 
 // ValidateGenerateRequest 在选择账户前校验与上游通道无关的生成参数
 func (s *PooledService) ValidateGenerateRequest(request GenerateRequest) error {
+	var err error
+	request, err = NormalizeGenerateRequestModel(request)
+	if err != nil {
+		return err
+	}
 	if strings.TrimPrefix(strings.TrimSpace(request.Model), "models/") == "" {
 		return fmt.Errorf("%w: GenerateContent model 不能为空", ErrInvalidArgument)
 	}
@@ -624,15 +642,27 @@ func (s *PooledService) ValidateGenerateRequest(request GenerateRequest) error {
 	if len(request.Contents) == 0 {
 		return fmt.Errorf("%w: 请求没有系统提示或对话内容", ErrInvalidArgument)
 	}
-	request, _, err := prepareToolRequest(request)
+	request, _, err = prepareToolRequest(request)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	// Cached PG entries cannot reject a strict Build request. Validate capabilities
+	// against the actual leased channel entry immediately before generation.
+	if request.Selection.Strict() {
+		return nil
 	}
 	return s.client.validateGenerateRequest(request)
 }
 
 // Generate 使用支持目标模型的独占账户生成事件流
 func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (<-chan Event, error) {
+	var err error
+	request, err = NormalizeGenerateRequestModel(request)
+	if err != nil {
+		return nil, err
+	}
+	request.Model = s.pool.CanonicalModelID(request.Model)
+	request.Selection.BaseModel = request.Model
 	modelID := strings.TrimPrefix(strings.TrimSpace(request.Model), "models/")
 	if modelID == "" {
 		return nil, fmt.Errorf("%w: GenerateContent model 不能为空", ErrInvalidArgument)
@@ -645,13 +675,11 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 	if err != nil {
 		return nil, err
 	}
-	selection := AccountSelection{
-		ModelID:    modelID,
-		Method:     "generateContent",
-		AccountID:  strings.TrimSpace(request.AccountID),
-		ResourceID: resourceID,
+	selection, err := GenerationAccountSelection(request, resourceID, s.pool.OutputContinuationRounds(modelID, request.Config.MaxOutputTokens))
+	if err != nil {
+		return nil, err
 	}
-	if RequestNeedsBuildSchema(request) || request.Unary && s.BuildNativeNonstream {
+	if !selection.StrictChannel && (RequestNeedsBuildSchema(request) || request.Unary && s.BuildNativeNonstream) {
 		selection.PreferredChannel = ChannelBuild
 	}
 	pinned := selection.AccountID != "" || selection.ResourceID != ""

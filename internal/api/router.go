@@ -80,7 +80,7 @@ func NewHandler(service aistudio.Service, config Config) http.Handler {
 	public.HandleFunc("POST /v1/messages/count_tokens", s.handleAnthropicCountTokens)
 	public.HandleFunc("GET /v1beta/models", s.handleGeminiModels)
 	public.HandleFunc("GET /v1beta/models/{model...}", s.handleGeminiModel)
-	public.HandleFunc("POST /v1beta/models/{action}", s.handleGeminiAction)
+	public.HandleFunc("POST /v1beta/models/{action...}", s.handleGeminiAction)
 	public.HandleFunc("GET /v1beta/operations/{operation}", s.handleGeminiVideoOperation)
 	public.HandleFunc("POST /upload/v1beta/files", s.handleGeminiFileUpload)
 	public.HandleFunc("GET /v1beta/files", s.handleGeminiFileList)

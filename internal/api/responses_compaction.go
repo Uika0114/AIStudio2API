@@ -378,10 +378,14 @@ func (s *server) compactionSummary(ctx context.Context, request responsesRequest
 	if err := inlineRemoteMedia(ctx, generate.Contents); err != nil {
 		return "", nil, err
 	}
+	generate, err = normalizeRoutedModel(generate)
+	if err != nil {
+		return "", nil, err
+	}
 	generate.Contents = append(generate.Contents, aistudio.Content{Role: aistudio.RoleUser, Parts: []aistudio.Part{{Text: fmt.Sprintf(compactionInstructions, prompt)}}})
 	generate.Tools.ToolConfig.Mode = "none"
 	generate.Unary = true
-	events, err := s.service.Generate(ctx, generate)
+	events, err := s.generateWithHistory(ctx, generate)
 	if err != nil {
 		return "", nil, err
 	}

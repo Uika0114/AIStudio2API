@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS bodies (
 
 // Row 是一次完成请求的用量记录
 type Row struct {
+	api.RequestLedgerMetadata
 	ID              string
 	Time            time.Time
 	Protocol        string
@@ -122,6 +123,9 @@ func Open(path string, log Logger) (*Store, error) {
 	if err := addCachedTokens(db); err != nil {
 		return nil, errors.Join(fmt.Errorf("初始化请求账本: %w", err), db.Close())
 	}
+	if err := addAttemptLedger(db); err != nil {
+		return nil, errors.Join(fmt.Errorf("初始化请求账本: %w", err), db.Close())
+	}
 	store := &Store{db: db, writes: make(chan write, queueLimit), done: make(chan struct{}), log: log}
 	if err := store.alignDays(); err != nil {
 		return nil, errors.Join(fmt.Errorf("重建本地日汇总: %w", err), db.Close())
@@ -177,6 +181,8 @@ func (store *Store) BodyCapture() bool {
 
 // Record 排队写入一条用量记录，不等待落盘
 func (store *Store) Record(row Row) {
+	row.RequestLedgerMetadata = row.RequestLedgerMetadata.Clone()
+	row.Attempts = api.CloneRequestAttempts(row.Attempts)
 	store.enqueue(write{row: &row})
 }
 
@@ -292,6 +298,10 @@ func (store *Store) write(batch []write) (err error) {
 	bodies := false
 	for _, item := range batch {
 		if row := item.row; row != nil {
+			// Canonical identity, not public routing/anti aliases, owns rollups.
+			if row.BaseModel != "" {
+				row.Model = row.BaseModel
+			}
 			attempts := row.Attempts
 			if attempts == nil {
 				attempts = []api.RequestAttempt{}
@@ -300,7 +310,10 @@ func (store *Store) write(batch []write) (err error) {
 			if err != nil {
 				return err
 			}
-			result, err := tx.Exec(`INSERT OR IGNORE INTO requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			result, err := tx.Exec(`INSERT OR IGNORE INTO requests
+ (id,time,protocol,path,model,account,channel,status,state,duration_ms,first_event_ms,queue_ms,
+ input_tokens,reasoning_tokens,reply_tokens,total_tokens,tool_calls,error,attempts,cached_tokens)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				row.ID, row.Time.UnixMilli(), row.Protocol, row.Path, row.Model, row.Account, row.Channel, row.Status, row.State,
 				row.Duration.Milliseconds(), row.FirstEvent.Milliseconds(), row.Queue.Milliseconds(),
 				row.InputTokens, row.ReasoningTokens, row.ReplyTokens, row.TotalTokens, row.ToolCalls, row.Error, string(encoded),
@@ -311,6 +324,9 @@ func (store *Store) write(batch []write) (err error) {
 			if inserted, err := result.RowsAffected(); err != nil {
 				return err
 			} else if inserted == 1 {
+				if err := writeRequestMetadata(tx, row); err != nil {
+					return err
+				}
 				value := rowEntry(row)
 				day, _ := localDay(value.time)
 				collect(hours, keyOf(floorDiv(value.time, hourMS)*hourMS, value), value)
@@ -380,9 +396,10 @@ func (store *Store) prune() {
 	day, _ := localDay(time.Now().Add(-usageRetention).UnixMilli())
 	hour := floorDiv(day, hourMS) * hourMS
 	_, requestsErr := store.db.Exec(`DELETE FROM requests WHERE time < ?`, hour)
+	_, metadataErr := store.db.Exec(deleteOrphanRequestMetadata)
 	_, hoursErr := store.db.Exec(`DELETE FROM hours WHERE start < ?`, hour)
 	_, daysErr := store.db.Exec(`DELETE FROM days WHERE start < ?`, day)
-	if err := errors.Join(requestsErr, hoursErr, daysErr); err != nil {
+	if err := errors.Join(requestsErr, metadataErr, hoursErr, daysErr); err != nil {
 		store.log("ERROR", fmt.Sprintf("请求账本清理失败 | 错误=%v", err))
 	}
 }

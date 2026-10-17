@@ -108,6 +108,9 @@ func (request interactionRequest) toGenerateRequest(id string) (aistudio.Generat
 	if generate.Model == "" {
 		return generate, fmt.Errorf("model is required")
 	}
+	if err := rejectRoutedModel(generate.Model); err != nil {
+		return generate, err
+	}
 	var err error
 	generate.Contents, err = interactionContents(request.Input)
 	if err != nil {

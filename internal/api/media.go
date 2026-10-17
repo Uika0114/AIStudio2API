@@ -80,6 +80,10 @@ func (s *server) writeOpenAIImages(w http.ResponseWriter, r *http.Request, reque
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}
+	if err := rejectRoutedModel(request.Model); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	model, _ := LookupPublicModel(models, request.Model)
 	imageConfig, err := openAIImageConfig(request.Size, request.Quality, model.CapabilityOptions)
 	if err != nil {
@@ -254,6 +258,10 @@ func (s *server) handleOpenAISpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Model == "" || strings.TrimSpace(request.Input) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "model and input are required")
+		return
+	}
+	if err := rejectRoutedModel(request.Model); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if request.Speed != 0 && (request.Speed < 0.25 || request.Speed > 4) {

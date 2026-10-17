@@ -110,6 +110,9 @@ func (s *server) handleOpenAITranslation(w http.ResponseWriter, r *http.Request)
 // translationModels 返回转录模型与翻译文本模型：model 是转录模型或省略时使用默认文本模型翻译，是其他模型时由默认转录模型转录、该模型翻译
 func (s *server) translationModels(ctx context.Context, model string) (string, string, error) {
 	model = strings.TrimPrefix(strings.TrimSpace(model), "models/")
+	if err := rejectRoutedModel(model); err != nil {
+		return "", "", err
+	}
 	if model == "" {
 		return aistudio.DefaultTranscriptionModel, openAITranslationModel, nil
 	}

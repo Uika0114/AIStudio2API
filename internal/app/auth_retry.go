@@ -294,8 +294,14 @@ func (transport *authRetryProtectedTransport) DoProtected(
 	request aistudio.GenerateRequest,
 	rpc aistudio.RPCRequest,
 ) (*aistudio.RPCResponse, error) {
+	attempt := 0
 	return transport.refresher.do(ctx, rpc.Method, func() (*aistudio.RPCResponse, error) {
-		return transport.transport.DoProtected(ctx, request, rpc)
+		callCtx := ctx
+		if attempt > 0 {
+			callCtx = aistudio.ContextWithGenerationAttemptReason(ctx, "auth_replay")
+		}
+		attempt++
+		return transport.transport.DoProtected(callCtx, request, rpc)
 	})
 }
 

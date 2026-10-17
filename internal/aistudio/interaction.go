@@ -226,6 +226,7 @@ func (c *Client) generateInteraction(ctx context.Context, request GenerateReques
 				ready <- nil
 			}
 			event.ProviderModel = entry.model.ID
+			event.Channel = ChannelPlayground
 			select {
 			case events <- event:
 				return nil
@@ -257,10 +258,34 @@ func (c *Client) generateInteraction(ctx context.Context, request GenerateReques
 		if matcher != nil {
 			emit = stopSequenceEmitter(matcher, forward, &matchedStopSequence)
 		}
+		var observedUsage *Usage
+		projectedEmit := emit
+		emit = func(event Event) error {
+			response.attempt.observe(event)
+			reportRawGenerationEvent(ctx, event)
+			if event.Usage != nil {
+				copied := *event.Usage
+				copied.Source = "upstream"
+				event.Usage = &copied
+				observedUsage = &copied
+			}
+			return projectedEmit(event)
+		}
 		err := DecodeInteractionStream(observeStreamActivity(ctx, response.Body), emit)
+		response.attempt.decoded(err, false)
 		if errors.Is(err, errStopSequenceMatched) {
 			_ = response.Body.Close()
-			finishAtStopSequence(ctx, request, output, stopTokenCount, matchedStopSequence, send)
+			stopSend := func(event Event) error {
+				if event.Usage != nil {
+					if observedUsage != nil {
+						event.Usage = observedUsage
+					} else {
+						event.Usage.Source = "estimated"
+					}
+				}
+				return send(event)
+			}
+			finishAtStopSequence(ctx, request, output, stopTokenCount, matchedStopSequence, stopSend)
 			err = ctx.Err()
 		} else if closeErr := response.Body.Close(); err == nil && ctx.Err() == nil {
 			err = closeErr

@@ -7,6 +7,7 @@ import (
 
 // FrameDecoder 将 field 1 repeated 帧转换为规范事件
 type FrameDecoder struct {
+	observe   func(Event) // complete-frame observation precedes output/stop projection
 	usage     *Usage
 	finished  bool
 	lastFrame json.RawMessage
@@ -29,6 +30,21 @@ func NewFrameDecoder() *FrameDecoder {
 
 // Decode 解码一条 repeated 流帧
 func (d *FrameDecoder) Decode(raw json.RawMessage) ([]Event, error) {
+	events, err := d.decode(raw)
+	if d.observe != nil {
+		if d.usage != nil {
+			d.observe(Event{Kind: EventUsage, Usage: d.usage})
+		}
+		for _, event := range events {
+			if event.Kind != EventUsage {
+				d.observe(event)
+			}
+		}
+	}
+	return events, err
+}
+
+func (d *FrameDecoder) decode(raw json.RawMessage) ([]Event, error) {
 	d.lastFrame = append(json.RawMessage(nil), raw...)
 	frame, err := rawArray(raw, "$[0][]", raw)
 	if err != nil {

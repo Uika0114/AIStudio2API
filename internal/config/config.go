@@ -351,6 +351,16 @@ func ParseModelMapping(value string) ([]ModelAlias, error) {
 		if index < 0 || alias == "" || model == "" {
 			return nil, fmt.Errorf("MODEL_MAPPING 的每一项写成 别名:模型 ID，%q 不符合", item)
 		}
+		for _, name := range []string{alias, model} {
+			name = strings.TrimPrefix(name, "models/")
+			head, _, separated := strings.Cut(name, "/")
+			if separated {
+				switch strings.ToLower(head) {
+				case "playground", "build", "anti-truncation", "auto":
+					return nil, fmt.Errorf("MODEL_MAPPING 不能占用或映射到保留路由命名空间 %q", name)
+				}
+			}
+		}
 		mapping = append(mapping, ModelAlias{Alias: alias, Model: strings.TrimPrefix(model, "models/")})
 	}
 	return mapping, nil

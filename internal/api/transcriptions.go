@@ -66,6 +66,10 @@ func (s *server) handleOpenAITranscription(w http.ResponseWriter, r *http.Reques
 	if model == "" {
 		model = aistudio.DefaultTranscriptionModel
 	}
+	if err := rejectRoutedModel(model); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	responseFormat := strings.TrimSpace(r.FormValue("response_format"))
 	if responseFormat == "" {
 		responseFormat = "json"

@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -14,10 +15,13 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 )
 
-// recordColumns 是请求记录查询读取的列，最后一列表示是否保存了正文
+// recordColumns preserves the original columns and appends nullable ledger metadata.
 const recordColumns = `r.id, r.time, r.protocol, r.path, r.model, r.account, r.channel, r.status, r.state,
  r.duration_ms, r.first_event_ms, r.queue_ms, r.input_tokens, r.cached_tokens, r.reasoning_tokens, r.reply_tokens, r.total_tokens,
- r.tool_calls, r.error, r.attempts, EXISTS(SELECT 1 FROM bodies b WHERE b.id = r.id)`
+ r.tool_calls, r.error, r.attempts, EXISTS(SELECT 1 FROM bodies b WHERE b.id = r.id),
+ m.requested_model, m.base_model, m.requested_channel, m.anti_truncation, m.usage_known, m.usage_source, m.attempt_count, m.sent_attempt_count`
+
+const recordTables = ` FROM requests r LEFT JOIN request_metadata m ON m.id = r.id`
 
 // recordFilter 返回请求记录的范围、维度筛选、状态码与关键字条件
 func recordFilter(query api.UsageRecordQuery) (string, []any) {
@@ -41,13 +45,22 @@ func scanRecord(rows *sql.Rows) (api.UsageRecord, error) {
 	var record api.UsageRecord
 	var at int64
 	var attempts string
+	var requestedModel, baseModel, usageSource sql.NullString
 	err := rows.Scan(&record.ID, &at, &record.Protocol, &record.Path, &record.Model, &record.Account, &record.Channel,
 		&record.Status, &record.State, &record.DurationMS, &record.FirstEventMS, &record.QueueMS, &record.InputTokens, &record.CachedTokens,
-		&record.ReasoningTokens, &record.ReplyTokens, &record.TotalTokens, &record.ToolCalls, &record.Error, &attempts, &record.HasBody)
+		&record.ReasoningTokens, &record.ReplyTokens, &record.TotalTokens, &record.ToolCalls, &record.Error, &attempts, &record.HasBody,
+		&requestedModel, &baseModel, &record.RequestedChannel, &record.AntiTruncation, &record.UsageKnown, &usageSource,
+		&record.AttemptCount, &record.SentAttemptCount)
 	if err != nil {
 		return record, err
 	}
 	record.Time = time.UnixMilli(at).UTC()
+	record.RequestedModel, record.BaseModel, record.UsageSource = requestedModel.String, baseModel.String, usageSource.String
+	if record.UsageKnown == nil || !*record.UsageKnown {
+		record.UsageSource = api.UsageSourceUnknown
+	} else if record.UsageSource == "" || record.UsageSource == api.UsageSourceUnknown {
+		record.UsageSource = api.UsageSourceUnattributed
+	}
 	if err := json.Unmarshal([]byte(attempts), &record.Attempts); err != nil {
 		return record, err
 	}
@@ -61,7 +74,7 @@ func (store *Store) Records(ctx context.Context, query api.UsageRecordQuery) (ap
 		clause += ` AND (r.time < ? OR r.time = ? AND r.id < ?)`
 		args = append(args, before.Time.UnixMilli(), before.Time.UnixMilli(), before.ID)
 	}
-	rows, err := store.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM requests r`+clause+
+	rows, err := store.db.QueryContext(ctx, `SELECT `+recordColumns+recordTables+clause+
 		` ORDER BY r.time DESC, r.id DESC LIMIT ?`, append(args, query.Limit+1)...)
 	if err != nil {
 		return api.UsageRecordPage{}, err
@@ -89,6 +102,7 @@ func (store *Store) Records(ctx context.Context, query api.UsageRecordQuery) (ap
 var csvHeader = []string{
 	"time", "id", "protocol", "path", "model", "account", "channel", "status", "state", "duration_ms", "first_event_ms",
 	"queue_ms", "input_tokens", "cached_tokens", "reasoning_tokens", "reply_tokens", "total_tokens", "tool_calls", "error", "attempts",
+	"requested_model", "base_model", "requested_channel", "anti_truncation", "usage_known", "usage_source", "attempt_count", "sent_attempt_count",
 }
 
 // csvText 为可能被电子表格当作公式的文本加单引号前缀
@@ -99,10 +113,26 @@ func csvText(value string) string {
 	return value
 }
 
+// csvOptional leaves unavailable evidence blank, distinct from known false/zero.
+func csvOptional[T any](value *T) string {
+	if value == nil {
+		return ""
+	}
+	return csvText(fmt.Sprint(*value))
+}
+
+// csvRequestedChannel distinguishes known auto from unavailable legacy metadata.
+func csvRequestedChannel(channel *string) string {
+	if channel != nil && *channel == "" {
+		return "auto"
+	}
+	return csvOptional(channel)
+}
+
 // ExportRecords 以带 BOM 的 UTF-8 CSV 按完成时间倒序写出范围内全部符合条件的请求记录
 func (store *Store) ExportRecords(ctx context.Context, query api.UsageRecordQuery, output io.Writer) error {
 	clause, args := recordFilter(query)
-	rows, err := store.db.QueryContext(ctx, `SELECT `+recordColumns+` FROM requests r`+clause+` ORDER BY r.time DESC, r.id DESC`, args...)
+	rows, err := store.db.QueryContext(ctx, `SELECT `+recordColumns+recordTables+clause+` ORDER BY r.time DESC, r.id DESC`, args...)
 	if err != nil {
 		return err
 	}
@@ -128,6 +158,8 @@ func (store *Store) ExportRecords(ctx context.Context, query api.UsageRecordQuer
 			csvText(record.Account), record.Channel, strconv.Itoa(record.Status), record.State, integer(record.DurationMS),
 			integer(record.FirstEventMS), integer(record.QueueMS), integer(record.InputTokens), integer(record.CachedTokens), integer(record.ReasoningTokens),
 			integer(record.ReplyTokens), integer(record.TotalTokens), strconv.Itoa(record.ToolCalls), csvText(record.Error), string(attempts),
+			csvText(record.RequestedModel), csvText(record.BaseModel), csvRequestedChannel(record.RequestedChannel), csvOptional(record.AntiTruncation),
+			csvOptional(record.UsageKnown), csvText(record.UsageSource), csvOptional(record.AttemptCount), csvOptional(record.SentAttemptCount),
 		}); err != nil {
 			return errors.Join(err, rows.Close())
 		}

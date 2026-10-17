@@ -664,10 +664,21 @@ func validateGenerateEntry(request GenerateRequest, entry modelEntry) error {
 }
 
 func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan Event, error) {
-	lease, leased := AccountLeaseFromContext(ctx)
-	build := leased && lease.Channel() == ChannelBuild
-	var entry modelEntry
 	var err error
+	request, err = NormalizeGenerateRequestModel(request)
+	if err != nil {
+		return nil, err
+	}
+	lease, leased := AccountLeaseFromContext(ctx)
+	actualChannel := ChannelPlayground
+	if leased {
+		actualChannel = lease.Channel()
+	}
+	if err := request.Selection.ValidateChannel(actualChannel); err != nil {
+		return nil, err
+	}
+	build := leased && actualChannel == ChannelBuild
+	var entry modelEntry
 	if build {
 		entry, err = c.buildModelEntry(ctx, request, lease)
 	} else {
@@ -675,6 +686,16 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	}
 	if err != nil {
 		return nil, err
+	}
+	if build {
+		entry.defaults.ContinuedOutputTokens = 0
+	}
+	if err := validateStrictGenerateEntry(request, entry); err != nil {
+		return nil, err
+	}
+	if request.Selection.Strict() {
+		request.Model = entry.model.ID
+		request.Selection.BaseModel = entry.model.ID
 	}
 	request.Tools, err = supportedTools(request.Tools, entry.model)
 	if err != nil {
@@ -688,14 +709,31 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	}
 	interaction := entry.defaults.InteractionStream && !build
 	if interaction {
+		if request.Selection.Strict() && (request.Selection.AntiTruncation || len(request.Tools.Functions) > 0 || len(request.Tools.Google) > 0 || request.Tools.GoogleSearch != nil) {
+			return nil, fmt.Errorf("%w: interaction-backed generation cannot preserve the requested tools", ErrInvalidArgument)
+		}
 		request.Tools = Tools{}
 	}
+	clientTools := request.Tools
 	request, contract, err := prepareToolRequest(request)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if err := validateTranscriptionConfig(request.Config.TranscriptionConfig, entry.model); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	var transport *AntiTruncationTransport
+	if request.Selection.AntiTruncation {
+		// none may remove declarations during normalization; reserve their names
+		// without re-enabling any of those client tools on the wire.
+		transportRequest := request
+		if clientTools.ToolConfig.Mode == "none" {
+			transportRequest.Tools = clientTools
+		}
+		request, transport, err = PrepareAntiTruncation(transportRequest)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		}
 	}
 	if request.Truncate && entry.model.InputTokenLimit > 0 {
 		request, err = c.truncateRequest(ctx, request, entry.model.InputTokenLimit)
@@ -709,6 +747,8 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	request.Config = applyModelMediaDefaults(request.Config, entry.model)
 	request.ImageRoute = entry.defaults.ImageRoute
 	request.Contents = applySpeechTranscript(request.Contents, entry.model, request.Config)
+	rawState := &rawGenerationState{observeOutput: transport != nil}
+	ctx = contextWithRawGenerationObserver(ctx, rawState.observe)
 	wireRequest := request
 	wireRequest.Config.StopSequences = nil
 	var response *RPCResponse
@@ -724,7 +764,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	matcher := newStopSequenceMatcher(request.Config.StopSequences)
 	var stopTokenCount <-chan tokenCountResult
 	cancelTokenCount := context.CancelFunc(func() {})
-	if matcher != nil {
+	if matcher != nil && transport == nil {
 		stopTokenCount, cancelTokenCount = c.countStopInput(ctx, request)
 	}
 	events := make(chan Event, 8)
@@ -737,6 +777,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		defer stopClose()
 		send := func(event Event) error {
 			event.ProviderModel = entry.model.ID
+			event.Channel = actualChannel
 			select {
 			case events <- event:
 				return nil
@@ -771,12 +812,60 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 				return send(event)
 			}
 		}
-		emit := stopSequenceEmitter(matcher, emitEvent, &matchedStopSequence)
+		projectedEmit := stopSequenceEmitter(matcher, emitEvent, &matchedStopSequence)
+		emit := func(event Event) error {
+			if transport == nil {
+				return projectedEmit(event)
+			}
+			projected, projectErr := transport.Project(event)
+			if projectErr != nil {
+				return projectErr
+			}
+			for _, item := range projected {
+				if emitErr := projectedEmit(item); emitErr != nil {
+					return emitErr
+				}
+			}
+			return nil
+		}
 		err := decodeStream(observeStreamActivity(ctx, response.Body), emit)
 		if errors.Is(err, errStopSequenceMatched) {
 			_ = response.Body.Close()
-			finishAtStopSequence(ctx, request, output, stopTokenCount, matchedStopSequence, send)
+			// The original client contract wraps this entire event channel,
+			// including locally produced stop finishes; hidden text cannot satisfy it.
+			stopSend := func(event Event) error {
+				if event.Kind == EventUsage && event.Usage != nil {
+					if rawState.usage != nil {
+						event.Usage = rawState.usage
+					} else {
+						event.Usage.Source = "estimated"
+					}
+				}
+				if event.Kind == EventFinish && rawState.finish != nil && rawState.finish.FinishReason != "stop" && rawState.finish.FinishReason != "" {
+					event = *rawState.finish
+					event.StopSequence = matchedStopSequence
+				}
+				return send(event)
+			}
+			if rawState.usage != nil || transport != nil {
+				stopUsage := rawState.usage
+				if stopUsage == nil {
+					stopUsage = localCompleteUsage(request, rawState.output)
+					stopUsage.Source = "estimated"
+				}
+				if sendErr := stopSend(Event{Kind: EventUsage, Usage: stopUsage}); sendErr == nil {
+					_ = stopSend(Event{Kind: EventFinish, FinishReason: "stop", StopSequence: matchedStopSequence})
+				}
+			} else {
+				finishAtStopSequence(ctx, request, output, stopTokenCount, matchedStopSequence, stopSend)
+			}
 			return
+		}
+		if err == nil && transport != nil {
+			err = transport.Close()
+		}
+		if usage == nil && rawState.usage != nil {
+			usage = rawState.usage
 		}
 		if closeErr := response.Body.Close(); err == nil {
 			err = closeErr
@@ -790,16 +879,41 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		}
 		if err != nil {
 			if ctx.Err() == nil {
+				if usage != nil {
+					usage.Source = "upstream"
+					_ = send(Event{Kind: EventUsage, Usage: usage})
+				}
 				_ = send(Event{Kind: EventError, Err: err})
 			}
 			return
 		}
+		if finish == nil {
+			if usage != nil {
+				usage.Source = "upstream"
+				_ = send(Event{Kind: EventUsage, Usage: usage})
+			}
+			_ = send(Event{Kind: EventError, Err: fmt.Errorf("generation stream ended without a finish event")})
+			return
+		}
 		if usage == nil {
-			usage = localCompleteUsage(request, output)
-		} else if usage.OutputTokensMissing {
+			if transport != nil {
+				usage = localCompleteUsage(request, rawState.output)
+			} else {
+				usage = localCompleteUsage(request, output)
+			}
+			usage.Source = "estimated"
+		} else {
+			usage.Source = "upstream"
+		}
+		if usage.OutputTokensMissing {
 			outputTokens := usage.TotalTokens - usage.InputTokens - usage.ToolTokens - usage.ReasoningTokens
 			if outputTokens < 0 {
-				outputTokens = localPartsTokens(output.visible)
+				if transport != nil {
+					outputTokens = localPartsTokens(rawState.output.visible)
+				} else {
+					outputTokens = localPartsTokens(output.visible)
+				}
+				usage.Source = "mixed"
 			}
 			usage.OutputTokens = outputTokens
 			usage.OutputTokensMissing = false
@@ -958,12 +1072,12 @@ func (c *Client) sendPlayground(ctx context.Context, request GenerateRequest, en
 		return nil, nil, err
 	}
 	return response, func(source io.Reader, emit func(Event) error) error {
-		return c.decodePlaygroundRounds(ctx, request, entry.defaults, runtime, source, emit)
+		return c.decodePlaygroundRounds(ctx, request, entry.defaults, runtime, source, emit, response.attempt)
 	}, nil
 }
 
 // decodePlaygroundRounds 解码 GenerateContent 流，上游要求续写时携带续写 token 发送下一轮，各轮输出依次转发，用量按官网规则合并
-func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateRequest, defaults GenerationDefaults, runtime RequestContext, source io.Reader, emit func(Event) error) error {
+func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateRequest, defaults GenerationDefaults, runtime RequestContext, source io.Reader, emit func(Event) error, attempt *physicalAttempt) error {
 	total := int64(0)
 	if defaults.ContinuedOutputTokens > 0 {
 		config, err := encodeGenerationConfig(request.Config, defaults)
@@ -987,12 +1101,23 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 				return emit(event)
 			}
 		}
+		decoder.observe = func(event Event) {
+			attempt.observe(event) // original per-send usage, before continuation aggregation
+			if event.Kind == EventUsage && event.Usage != nil && previous != nil {
+				merged := mergeContinuedUsage(*previous, *event.Usage)
+				event.Usage = &merged
+			}
+			reportRawGenerationEvent(ctx, event)
+		}
 		if err := DecodeGenerateStream(source, decoder, forward); err != nil {
+			attempt.decoded(err, false)
 			return err
 		}
 		if err := decoder.End(); err != nil {
+			attempt.decoded(err, false)
 			return err
 		}
+		attempt.decoded(nil, decoder.continuation != "")
 		if decoder.continuation == "" {
 			return nil
 		}
@@ -1002,6 +1127,9 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 				merged = mergeContinuedUsage(*previous, merged)
 			}
 			previous = &merged
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		request.continuationRound++
 		request.continuationToken = decoder.continuation
@@ -1020,6 +1148,7 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 		defer stopClose()
 		defer response.Body.Close()
 		source = observeStreamActivity(ctx, response.Body)
+		attempt = response.attempt
 	}
 }
 

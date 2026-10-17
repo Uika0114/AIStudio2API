@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
 // requestBodyLimit 是单个请求或响应正文保存的最大字节数
@@ -134,12 +137,131 @@ type UsageReport struct {
 	Options        map[string][]string     `json:"options"`
 }
 
-// RequestAttempt 记录一次未成功的上游尝试
+// RequestLedgerMetadata describes observed routing and usage, not quota or proof
+// of Google execution. Nil pointers mean unavailable (including historical rows).
+// AttemptCount counts observed generation IDs, including preparation failures;
+// SentAttemptCount counts only those that entered the send boundary. Neither
+// includes legacy outer failures, nor claims that observation is exhaustive.
+type RequestLedgerMetadata struct {
+	RequestedModel   string  `json:"requested_model,omitempty"`
+	BaseModel        string  `json:"base_model,omitempty"`
+	RequestedChannel *string `json:"requested_channel"` // empty string is known auto
+	AntiTruncation   *bool   `json:"anti_truncation"`
+	UsageKnown       *bool   `json:"usage_known"`
+	UsageSource      string  `json:"usage_source"`
+	AttemptCount     *int    `json:"attempt_count"`
+	SentAttemptCount *int    `json:"sent_attempt_count"`
+}
+
+const (
+	AttemptKindGeneration   = "generation"
+	AttemptKindLegacy       = "legacy_outer_failure"
+	UsageSourceUnknown      = "unknown"
+	UsageSourceUnattributed = "unattributed"
+)
+
+// RequestAttempt preserves old outer failure records alongside physical attempt
+// snapshots. Only kind=generation has send/response evidence. Channel is actual.
 type RequestAttempt struct {
-	Account    string `json:"account"`
-	Channel    string `json:"channel"`
-	Error      string `json:"error"`
-	DurationMS int64  `json:"duration_ms"`
+	Account           string          `json:"account"`
+	Channel           string          `json:"channel"`
+	Error             string          `json:"error"`
+	DurationMS        int64           `json:"duration_ms"`
+	Kind              string          `json:"kind"`
+	ID                string          `json:"id,omitempty"`
+	Revision          uint64          `json:"revision,omitempty"`
+	ContinuationRound int             `json:"continuation_round,omitempty"`
+	RequestID         string          `json:"request_id,omitempty"`
+	ParentID          string          `json:"parent_id,omitempty"`
+	RequestedModel    string          `json:"requested_model,omitempty"`
+	BaseModel         string          `json:"base_model,omitempty"`
+	RequestedChannel  *string         `json:"requested_channel"`
+	AntiTruncation    *bool           `json:"anti_truncation"`
+	AccountID         string          `json:"account_id,omitempty"`
+	Method            string          `json:"method,omitempty"`
+	Mode              string          `json:"mode,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	Stage             string          `json:"stage"`
+	Sent              *bool           `json:"sent"`
+	ResponseReceived  *bool           `json:"response_received"`
+	StatusCode        int             `json:"status_code,omitempty"`
+	StartedAt         *time.Time      `json:"started_at,omitempty"`
+	Usage             *aistudio.Usage `json:"usage"`
+	UsageSource       string          `json:"usage_source"`
+}
+
+// UnmarshalJSON marks old four-field JSON explicitly unknown without rewriting
+// historical database rows or interpreting absent bools as evidence of no send.
+func (attempt *RequestAttempt) UnmarshalJSON(data []byte) error {
+	type plain RequestAttempt
+	var value plain
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if value.Kind == "" {
+		value.Kind = AttemptKindLegacy
+	}
+	if value.Stage == "" {
+		value.Stage = "unknown"
+	}
+	value.UsageSource = attemptUsageSource(value.Usage, value.UsageSource)
+	*attempt = RequestAttempt(value)
+	return nil
+}
+
+func attemptUsageSource(usage *aistudio.Usage, source string) string {
+	if usage == nil {
+		return UsageSourceUnknown
+	}
+	if source == "" {
+		source = usage.Source
+	}
+	if source == "" || source == UsageSourceUnknown {
+		return UsageSourceUnattributed
+	}
+	return source
+}
+
+// CloneRequestAttempts detaches mutable pointer fields before async persistence
+// or publication. Snapshot observers retain ownership of their input Usage.
+func CloneRequestAttempts(attempts []RequestAttempt) []RequestAttempt {
+	result := slices.Clone(attempts)
+	for i := range result {
+		result[i].RequestedChannel = cloneLedgerValue(result[i].RequestedChannel)
+		result[i].AntiTruncation = cloneLedgerValue(result[i].AntiTruncation)
+		result[i].Sent = cloneLedgerValue(result[i].Sent)
+		result[i].ResponseReceived = cloneLedgerValue(result[i].ResponseReceived)
+		result[i].StartedAt = cloneLedgerValue(result[i].StartedAt)
+		result[i].Usage = cloneLedgerValue(result[i].Usage)
+	}
+	return result
+}
+
+func cloneLedgerValue[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+func (metadata RequestLedgerMetadata) Clone() RequestLedgerMetadata {
+	metadata.RequestedChannel = cloneLedgerValue(metadata.RequestedChannel)
+	metadata.AntiTruncation = cloneLedgerValue(metadata.AntiTruncation)
+	metadata.UsageKnown = cloneLedgerValue(metadata.UsageKnown)
+	metadata.AttemptCount = cloneLedgerValue(metadata.AttemptCount)
+	metadata.SentAttemptCount = cloneLedgerValue(metadata.SentAttemptCount)
+	return metadata
+}
+
+// WithUsage projects only the supplied logical Usage's provenance. It never
+// infers root totals from physical attempts or labels unmarked usage upstream.
+func (metadata RequestLedgerMetadata) WithUsage(usage *aistudio.Usage) RequestLedgerMetadata {
+	metadata = metadata.Clone()
+	known := usage != nil
+	metadata.UsageKnown = &known
+	metadata.UsageSource = attemptUsageSource(usage, "")
+	return metadata
 }
 
 // UsageRecordQuery 选择请求记录的时间范围、筛选、状态码、关键字与分页位置
@@ -180,6 +302,7 @@ func decodeUsageCursor(value string) (*UsageCursor, error) {
 
 // UsageRecord 是一条已完成请求的账本记录
 type UsageRecord struct {
+	RequestLedgerMetadata
 	ID              string           `json:"id"`
 	Time            time.Time        `json:"time"`
 	Protocol        string           `json:"protocol"`

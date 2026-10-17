@@ -57,6 +57,8 @@ type AdminLog struct {
 
 // RequestLog 保存可关联的请求状态、用量与诊断字段
 type RequestLog struct {
+	RequestLedgerMetadata
+	Attempts        []RequestAttempt  `json:"attempts,omitempty"`
 	ID              string            `json:"id"`
 	State           string            `json:"state"`
 	Model           string            `json:"model,omitempty"`
@@ -94,6 +96,7 @@ type RequestLogUsage struct {
 
 // AccessLog 表示一次公开 API 请求的最终访问记录
 type AccessLog struct {
+	RequestLedgerMetadata
 	Status          int
 	Latency         time.Duration
 	FirstEvent      time.Duration

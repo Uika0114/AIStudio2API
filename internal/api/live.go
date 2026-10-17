@@ -163,6 +163,9 @@ func bidiRequestFromSetup(
 	if model == "" {
 		return aistudio.BidiRequest{}, nil, fmt.Errorf("%w: bidi model 不能为空", aistudio.ErrInvalidArgument)
 	}
+	if err := rejectRoutedModel(model); err != nil {
+		return aistudio.BidiRequest{}, nil, err
+	}
 	input, err := bidiModalitySet(setup.InputModalities)
 	if err != nil {
 		return aistudio.BidiRequest{}, nil, err

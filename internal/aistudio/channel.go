@@ -112,6 +112,18 @@ func buildMethodSelection(selection AccountSelection) bool {
 
 // selectionChannelsLocked 返回选择可使用的通道顺序，优先通道排在首位；embedding 只使用 Build，实时方法依次尝试 Playground 与 Build，其余非生成请求只使用 Playground RPC
 func (p *AccountPool) selectionChannelsLocked(selection AccountSelection) []Channel {
+	if selection.StrictChannel {
+		if selection.Method != "generateContent" || !p.channelEnabledLocked(selection.Channel) {
+			return nil
+		}
+		if selection.Channel == ChannelBuild && !generationChannelSelection(selection) {
+			return nil
+		}
+		if selection.Channel != ChannelPlayground && selection.Channel != ChannelBuild {
+			return nil
+		}
+		return []Channel{selection.Channel}
+	}
 	if !generationChannelSelection(selection) {
 		if buildMethodSelection(selection) && p.channelEnabledLocked(ChannelBuild) {
 			if selection.Method == "embedContent" {
@@ -222,7 +234,7 @@ func (p *AccountPool) channelCandidatesLocked(indices []int, selection AccountSe
 	if p.routingStrategy != "round-robin" || len(indices) <= 1 && len(channels) <= 1 {
 		return candidates
 	}
-	key := selectionAccessScope(selection)
+	key := selectionRoutingKey(selection)
 	lastAccount := p.lastPicked[key]
 	lastChannel := p.lastPickedChannel[key]
 	start := sort.Search(len(candidates), func(position int) bool {

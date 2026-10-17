@@ -36,6 +36,7 @@ type RPCResponse struct {
 	StatusCode int
 	Header     http.Header
 	Body       io.ReadCloser
+	attempt    *physicalAttempt // internal audit only; never a wire/header field
 }
 
 // RPCTransport 负责认证、账户租约、Cookie 写回和真实网络发送

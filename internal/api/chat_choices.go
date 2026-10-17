@@ -41,7 +41,7 @@ func (s *server) startChatChoices(ctx context.Context, request aistudio.Generate
 		choices.running.Add(1)
 		go func() {
 			defer choices.running.Done()
-			upstream, err := s.service.Generate(choices.ctx, choice)
+			upstream, err := s.generateWithHistory(choices.ctx, choice)
 			source := upstream
 			if err == nil && stream {
 				source, err = awaitStreamStart(choices.ctx, upstream)
@@ -150,13 +150,17 @@ func (choices *chatChoices) record(ctx context.Context, results []generationResu
 // sumUsage 返回各次生成用量之和，均无用量时返回 nil
 func sumUsage(results []generationResult) *aistudio.Usage {
 	var total *aistudio.Usage
+	missing := false
 	for index := range results {
 		usage := results[index].usage
 		if usage == nil {
+			missing = true
 			continue
 		}
 		if total == nil {
-			total = &aistudio.Usage{}
+			total = &aistudio.Usage{Source: usage.Source}
+		} else if total.Source != usage.Source {
+			total.Source = "mixed"
 		}
 		total.InputTokens += usage.InputTokens
 		total.CachedTokens += usage.CachedTokens
@@ -165,6 +169,9 @@ func sumUsage(results []generationResult) *aistudio.Usage {
 		total.ToolTokens += usage.ToolTokens
 		total.TotalTokens += usage.TotalTokens
 		total.OutputTokensMissing = total.OutputTokensMissing || usage.OutputTokensMissing
+	}
+	if total != nil && missing {
+		total.Source = "mixed"
 	}
 	return total
 }

@@ -227,6 +227,7 @@ type AccountSelection struct {
 	AllowedAccountIDs []string
 	PlaygroundOnly    bool
 	Channel           Channel
+	StrictChannel     bool // explicit public model policy, unlike legacy internal preferences
 	PreferredChannel  Channel
 	anyTier           bool
 }
@@ -697,6 +698,7 @@ func (p *AccountPool) PublicModels(models []Model) []Model {
 		if len(model.Channels) == 0 && len(p.modelChannelsLocked(model, true)) == 0 {
 			continue
 		}
+		model.ChannelTokenLimits = p.publicTokenLimitsLocked(model)
 		public = append(public, model)
 	}
 	return callableFirst(public)
@@ -1901,11 +1903,8 @@ func (p *AccountPool) markModelAccessVerified(
 	canonicalModelID := canonicalAccountModelID(account, modelID)
 	current := account.runtime.ModelAccess[canonicalModelID]
 	_, cooling := account.runtime.Cooldowns[canonicalModelID]
-	globalAccess := account.runtime.ModelAccess[globalCooldownKey]
-	_, globalCooling := account.runtime.Cooldowns[globalCooldownKey]
 	unchanged := generation == account.modelAccessGeneration && current.State == ModelAccessVerified &&
-		!cooling && !current.CheckedAt.Before(checkedAt) && !globalCooling &&
-		!globalAccess.CheckedAt.Before(checkedAt)
+		!cooling && !current.CheckedAt.Before(checkedAt)
 	p.mu.Unlock()
 	if unchanged {
 		return false, nil
@@ -1931,17 +1930,11 @@ func (p *AccountPool) markModelAccessVerified(
 			}
 			delete(runtimeState.Cooldowns, canonicalModelID)
 		}
-		globalAccess := runtimeState.ModelAccess[globalCooldownKey]
-		if !globalAccess.CheckedAt.After(checkedAt) {
-			if globalAccess.CheckedAt.Before(checkedAt) {
-				runtimeChanged = true
-			}
-			if _, exists := runtimeState.Cooldowns[globalCooldownKey]; exists {
-				runtimeChanged = true
-			}
-			globalAccess.CheckedAt = checkedAt.UTC()
-			runtimeState.ModelAccess[globalCooldownKey] = globalAccess
+		// Success for one model/channel is not evidence that an account-global
+		// quota has reset. Only an already expired deadline can be removed.
+		if global, exists := runtimeState.Cooldowns[globalCooldownKey]; exists && !global.Until.After(checkedAt) {
 			delete(runtimeState.Cooldowns, globalCooldownKey)
+			runtimeChanged = true
 		}
 		return runtimeChanged, nil, nil
 	})
@@ -2165,6 +2158,17 @@ func (p *AccountPool) ClearCooldownIfGeneration(
 			return false, nil, nil
 		}
 		modelAccessScope = canonicalAccountModelID(account, modelAccessScope)
+		if modelAccessScope == globalCooldownKey {
+			// This helper is called by successful auxiliary RPCs. They neither
+			// clear active global quota nor invalidate a late generation failure
+			// by advancing the global CheckedAt timestamp.
+			global, exists := runtimeState.Cooldowns[globalCooldownKey]
+			if !exists || global.Until.After(checkedAt) {
+				return false, nil, nil
+			}
+			delete(runtimeState.Cooldowns, globalCooldownKey)
+			return true, nil, nil
+		}
 		currentAccess := runtimeState.ModelAccess[modelAccessScope]
 		changed := false
 		if !currentAccess.CheckedAt.After(checkedAt) {
@@ -2176,18 +2180,7 @@ func (p *AccountPool) ClearCooldownIfGeneration(
 				delete(runtimeState.Cooldowns, modelAccessScope)
 			}
 		}
-		if modelAccessScope != globalCooldownKey {
-			globalAccess := runtimeState.ModelAccess[globalCooldownKey]
-			if !globalAccess.CheckedAt.After(checkedAt) {
-				_, cooling := runtimeState.Cooldowns[globalCooldownKey]
-				if globalAccess.CheckedAt.Before(checkedAt) || cooling {
-					changed = true
-					globalAccess.CheckedAt = checkedAt
-					runtimeState.ModelAccess[globalCooldownKey] = globalAccess
-					delete(runtimeState.Cooldowns, globalCooldownKey)
-				}
-			}
-		}
+		// A local auxiliary success must not clear or advance account-global quota.
 		return changed, nil, nil
 	})
 	return err
@@ -2559,8 +2552,8 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 		}
 		account.active++
 		account.LastUsed = now
-		p.lastPicked[selectionAccessScope(selection)] = account.ID
-		p.lastPickedChannel[selectionAccessScope(selection)] = candidate.channel
+		p.lastPicked[selectionRoutingKey(selection)] = account.ID
+		p.lastPickedChannel[selectionRoutingKey(selection)] = candidate.channel
 		return &AccountLease{
 			pool: p, account: account, authGeneration: account.authGeneration,
 			modelAccessGeneration: account.modelAccessGeneration, refreshRuntime: refreshRuntime, checkedAt: now.UTC(),
@@ -2729,7 +2722,7 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 		return p.accounts[indices[left]].ID < p.accounts[indices[right]].ID
 	})
 	if p.routingStrategy == "round-robin" {
-		last := p.lastPicked[selectionAccessScope(selection)]
+		last := p.lastPicked[selectionRoutingKey(selection)]
 		start := sort.Search(len(indices), func(index int) bool { return p.accounts[indices[index]].ID > last })
 		indices = append(indices[start:], indices[:start]...)
 	}

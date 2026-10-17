@@ -2308,6 +2308,9 @@ func (service *trackedService) withAliases(models []aistudio.Model) []aistudio.M
 	index := make(map[string]int, len(models))
 	for i, model := range models {
 		index[model.ID] = i
+		if models[i].BaseModel == "" {
+			models[i].BaseModel = model.ID
+		}
 	}
 	targets := slices.Clone(models)
 	done := make(map[string]bool)
@@ -3273,6 +3276,12 @@ func inlineMediaInput(contents []aistudio.Content) (int, int64) {
 // Generate 获取唯一账户并转发规范事件流
 func (service *trackedService) Generate(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
 	generationStartedAt := time.Now()
+	var selectionErr error
+	request, selectionErr = aistudio.NormalizeGenerateRequestModel(request)
+	if selectionErr != nil {
+		api.SetAccessLogError(ctx, selectionErr)
+		return nil, selectionErr
+	}
 	model, config, suffixErr := aistudio.ApplyModelSuffix(service.mappedModel(request.Model), request.Config)
 	request.Model, request.Config = model, config
 	api.SetAccessLogTarget(ctx, request.Model, "")
@@ -3280,6 +3289,8 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 	api.SetAccessLogGenerationInput(ctx, request)
 	api.StartAccessLog(ctx)
 	request.Model = service.pool.CanonicalModelID(request.Model)
+	request.Selection.BaseModel = request.Model
+	api.SetAccessLogModelSelection(ctx, request.Selection)
 	requestCtx, cancel, err := service.dataRequestContextFor(ctx, service.generateTimeout(request))
 	if err == nil && suffixErr != nil {
 		err = suffixErr
@@ -3298,6 +3309,17 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 		service.requests.finish(request.ID, "failed", err)
 		return nil, err
 	}
+	labels := make(map[string]string)
+	for _, account := range service.pool.Status() {
+		labels[account.ID] = account.Label
+	}
+	requestCtx = aistudio.ContextWithGenerationAttemptObserver(requestCtx, func(attempt aistudio.GenerationAttempt) {
+		label := labels[attempt.AccountID]
+		if label == "" {
+			label = attempt.AccountID
+		}
+		api.AddAccessLogGenerationAttempt(requestCtx, attempt, label)
+	})
 	service.requests.start(request, cancel)
 	resourceID, err := service.pool.ResourceIDForContents(requestCtx, request.Contents)
 	if err != nil {
@@ -3361,17 +3383,13 @@ func (service *trackedService) generateWithRetry(
 		if copyFiles {
 			selectionResourceID = ""
 		}
-		selection := aistudio.AccountSelection{
-			ModelID: modelID, Method: "generateContent",
-			AccountID: selectionAccountID, ResourceID: selectionResourceID,
+		selection, selectionErr := aistudio.GenerationAccountSelection(request, resourceID, continuationRounds)
+		if selectionErr != nil {
+			err = selectionErr
+			break
 		}
-		if resourceID != "" || request.Config.SpeechConfig != nil && request.Config.SpeechConfig.Mode != "" {
-			selection.PlaygroundOnly = true
-		}
-		if continuationRounds > 1 {
-			selection.PlaygroundOnly = true
-		}
-		if !selection.PlaygroundOnly && service.pool.BuildEnabled() && aistudio.RequestNeedsBuildSchema(request) {
+		selection.AccountID, selection.ResourceID = selectionAccountID, selectionResourceID
+		if !selection.StrictChannel && !selection.PlaygroundOnly && service.pool.BuildEnabled() && aistudio.RequestNeedsBuildSchema(request) {
 			selection.Channel = aistudio.ChannelBuild
 		}
 		fallbackReason := ""
@@ -3388,7 +3406,7 @@ func (service *trackedService) generateWithRetry(
 				selection.PreferredChannel = aistudio.ChannelBuild
 			}
 		}
-		if buildRejection != nil && buildRejection.accountID == selectionAccountID {
+		if !selection.StrictChannel && buildRejection != nil && buildRejection.accountID == selectionAccountID {
 			selection.PlaygroundOnly = true
 			selection.PreferredChannel = ""
 			fallbackReason = "Build 拒绝请求参数"
@@ -3403,7 +3421,7 @@ func (service *trackedService) generateWithRetry(
 		}
 		nextLease, acquireErr := service.acquireWarmLease(requestCtx, selection)
 		var buildCooling *aistudio.AllCoolingError
-		if acquireErr != nil && selection.Channel == aistudio.ChannelBuild && requestCtx.Err() == nil &&
+		if !selection.StrictChannel && acquireErr != nil && selection.Channel == aistudio.ChannelBuild && requestCtx.Err() == nil &&
 			(errors.Is(acquireErr, aistudio.ErrNoEligibleAccount) || errors.As(acquireErr, &buildCooling)) {
 			// 没有账户能经 Build 服务时，结构化输出 Schema 改用 Playground 载体
 			selection.Channel = ""
@@ -3430,7 +3448,7 @@ func (service *trackedService) generateWithRetry(
 		}
 		lease = nextLease
 		attemptStartedAt := time.Now()
-		err = nil
+		err = request.Selection.ValidateChannel(lease.Channel())
 		source = nil
 		request.AccountID = lease.Account().ID
 		attemptProxy := service.proxies.Binding(request.AccountID)
@@ -3444,6 +3462,9 @@ func (service *trackedService) generateWithRetry(
 		service.requests.markChannel(request.ID, string(lease.Channel()))
 		service.requests.logRequestProgress(request.ID, accountLabel, "INFO", "等待上游响应")
 		attemptCtx := aistudio.ContextWithAccountLease(requestCtx, lease)
+		if attempt > 0 {
+			attemptCtx = aistudio.ContextWithGenerationAttemptReason(attemptCtx, "account_or_worker_retry")
+		}
 		attemptCtx = aistudio.ContextWithUpstreamModeObserver(attemptCtx, func(method, mode, reason string) {
 			level := "INFO"
 			message := fmt.Sprintf("上游调用 | 通道=%s | 模式=%s | RPC=%s", lease.Channel(), mode, method)
@@ -3458,7 +3479,7 @@ func (service *trackedService) generateWithRetry(
 		})
 		var attemptCopies *aistudio.TemporaryFileCopies
 		copiedFileCount := 0
-		if resourceID != "" {
+		if err == nil && resourceID != "" {
 			fileCopies, ok := service.service.(interface {
 				CopyFileReferencesToLease(context.Context, *aistudio.AccountLease, []aistudio.Content) ([]aistudio.Content, *aistudio.TemporaryFileCopies, error)
 			})
@@ -3505,6 +3526,8 @@ func (service *trackedService) generateWithRetry(
 			close(prepareWarningDone)
 		})
 		activity = &upstreamActivity{}
+		var semanticStarted atomic.Bool
+		attemptCtx = aistudio.ContextWithGenerationProgressObserver(attemptCtx, func() { semanticStarted.Store(true) })
 		attemptCtx = aistudio.ContextWithStreamActivityObserver(attemptCtx, activity.observe)
 		attemptCtx = aistudio.ContextWithRequestPhaseObserver(attemptCtx, prepareTiming.observe)
 		if err == nil {
@@ -3579,7 +3602,7 @@ func (service *trackedService) generateWithRetry(
 		waaRuntimeFailed := aistudio.DefinitiveWAARuntimeFailure(err)
 		workerReplaced := errors.Is(err, errAccountWorkerReplaced)
 		localWorkerFailure := (workerFailed || workerReplaced) && requestCtx.Err() == nil
-		retryable := retryableGenerateAccountError(requestCtx, err) || localWorkerFailure
+		retryable := (retryableGenerateAccountError(requestCtx, err) || localWorkerFailure) && !semanticStarted.Load()
 		recoverWorker := false
 		if aistudio.DefinitiveAuthenticationFailure(err) {
 			if stateErr := lease.MarkAuthenticationRequired(err.Error()); stateErr != nil {
@@ -3617,7 +3640,7 @@ func (service *trackedService) generateWithRetry(
 			}
 		}
 		var rpcErr *aistudio.RPCError
-		if lease.Channel() == aistudio.ChannelBuild && service.pool.PlaygroundEnabled() && requestCtx.Err() == nil &&
+		if !selection.StrictChannel && !semanticStarted.Load() && lease.Channel() == aistudio.ChannelBuild && service.pool.PlaygroundEnabled() && requestCtx.Err() == nil &&
 			errors.As(err, &rpcErr) && rpcErr.StatusCode == http.StatusBadRequest && rpcErr.Code == 3 {
 			buildRejection = &rejectedBuildAttempt{
 				accountID: request.AccountID, generation: lease.ModelAccessGeneration(), checkedAt: lease.CheckedAt(), err: err,
@@ -3637,7 +3660,7 @@ func (service *trackedService) generateWithRetry(
 			var resetErr error
 			recoverWorker, _, resetErr = service.recoverWorkerOnce(
 				requestCtx, request.AccountID, workerGeneration, recoveredWorker,
-				needsWAARuntimeRecovery(err, false, workerFailed, workerReplaced),
+				needsWAARuntimeRecovery(err, semanticStarted.Load(), workerFailed, workerReplaced),
 				workerFailed || waaRuntimeFailed,
 			)
 			if resetErr != nil {
@@ -3954,8 +3977,21 @@ func (service *trackedService) forwardEvents(
 		}
 		if event.Kind == aistudio.EventError {
 			requestErr = event.Err
+			if event.Err == nil {
+				event.Err = errors.New("upstream returned an empty error event")
+				requestErr = event.Err
+			}
 			if aistudio.DefinitiveAuthenticationFailure(event.Err) {
 				if stateErr := lease.MarkAuthenticationRequired(event.Err.Error()); stateErr != nil {
+					requestErr = errors.Join(requestErr, stateErr)
+					event.Err = requestErr
+				}
+			} else if cooldown, ok := aistudio.QuotaCooldownForError(event.Err, time.Now()); ok {
+				scope := lease.CooldownScope(requestedModelID)
+				if cooldown.Global {
+					scope = ""
+				}
+				if _, stateErr := service.pool.MarkQuotaCooldownIfGeneration(lease.Account().ID, scope, accessGeneration, lease.CheckedAt(), cooldown); stateErr != nil {
 					requestErr = errors.Join(requestErr, stateErr)
 					event.Err = requestErr
 				}

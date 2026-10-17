@@ -454,7 +454,7 @@ type buildResponse struct {
 	UsageMetadata *struct {
 		PromptTokenCount        int64  `json:"promptTokenCount"`
 		CandidatesTokenCount    *int64 `json:"candidatesTokenCount"`
-		TotalTokenCount         int64  `json:"totalTokenCount"`
+		TotalTokenCount         *int64 `json:"totalTokenCount"`
 		CachedContentTokenCount int64  `json:"cachedContentTokenCount"`
 		ThoughtsTokenCount      int64  `json:"thoughtsTokenCount"`
 		ToolUsePromptTokenCount int64  `json:"toolUsePromptTokenCount"`
@@ -506,21 +506,37 @@ var buildChunkSources = map[string]string{"web": "web", "retrievedContext": "ret
 
 // BuildStreamDecoder 把 Build 代理返回的 Gemini API 响应块转换为规范事件
 type BuildStreamDecoder struct {
+	observe  func(Event)
 	usage    *Usage
 	finished bool
 }
 
 // Decode 解码一个 Gemini API GenerateContentResponse JSON
 func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
+	events, err := d.decode(raw)
+	if d.observe != nil {
+		if d.usage != nil {
+			d.observe(Event{Kind: EventUsage, Usage: d.usage})
+		}
+		for _, event := range events {
+			if event.Kind != EventUsage {
+				d.observe(event)
+			}
+		}
+	}
+	return events, err
+}
+
+func (d *BuildStreamDecoder) decode(raw []byte) ([]Event, error) {
 	var response buildResponse
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$chunk", Detail: err.Error(), Raw: cloneRaw(raw)}
 	}
-	if response.UsageMetadata != nil && response.UsageMetadata.TotalTokenCount > 0 {
+	if response.UsageMetadata != nil && response.UsageMetadata.TotalTokenCount != nil {
 		metadata := response.UsageMetadata
 		usage := Usage{
 			InputTokens: metadata.PromptTokenCount, CachedTokens: metadata.CachedContentTokenCount, ReasoningTokens: metadata.ThoughtsTokenCount,
-			ToolTokens: metadata.ToolUsePromptTokenCount, TotalTokens: metadata.TotalTokenCount,
+			ToolTokens: metadata.ToolUsePromptTokenCount, TotalTokens: *metadata.TotalTokenCount,
 		}
 		if metadata.CandidatesTokenCount != nil {
 			usage.OutputTokens = *metadata.CandidatesTokenCount
@@ -730,6 +746,13 @@ func DecodeBuildStream(source io.Reader, decoder *BuildStreamDecoder, emit func(
 			return err
 		}
 	}
+	if token, err := stream.Token(); err != nil || token != json.Delim(']') {
+		return &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$", Detail: "根数组没有正常结束"}
+	}
+	var extra json.RawMessage
+	if err := stream.Decode(&extra); err != io.EOF {
+		return &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$", Detail: "响应后存在额外或损坏数据"}
+	}
 	return decoder.End()
 }
 
@@ -842,6 +865,9 @@ func (c *Client) sendBuildMode(ctx context.Context, request GenerateRequest, ent
 	reportUpstreamMode(ctx, method, mode, reason)
 	rpc := newRPCRequest(method, request.AccountID, request.ID, proxy, !unary)
 	c.applyBenefitTier(rpc.Method, request.AccountID, rpc.Header)
+	if reason != "" {
+		ctx = ContextWithGenerationAttemptReason(ctx, "build_mode_fallback")
+	}
 	response, err := c.protected.DoProtected(ctx, request, rpc)
 	if err != nil {
 		return nil, nil, fmt.Errorf("发送 AI Studio %s: %w", method, err)
@@ -850,21 +876,47 @@ func (c *Client) sendBuildMode(ctx context.Context, request GenerateRequest, ent
 	if err != nil {
 		return nil, nil, err
 	}
-	decoder := &BuildStreamDecoder{}
+	decoder := &BuildStreamDecoder{observe: func(event Event) { response.attempt.observe(event); reportRawGenerationEvent(ctx, event) }}
 	if unary {
 		return response, func(source io.Reader, emit func(Event) error) error {
-			return DecodeBuildUnary(source, decoder, emit)
+			err := DecodeBuildUnary(source, decoder, emit)
+			response.attempt.decoded(err, false)
+			return err
 		}, nil
 	}
 	return response, func(source io.Reader, emit func(Event) error) error {
-		return DecodeBuildStream(source, decoder, emit)
+		err := DecodeBuildStream(source, decoder, emit)
+		response.attempt.decoded(err, false)
+		return err
 	}, nil
 }
 
 // buildModelEntry 返回 Build 请求使用的目录条目：Playground 目录模型复用官网默认值，Build 独有模型按 Build 目录推导
 func (c *Client) buildModelEntry(ctx context.Context, request GenerateRequest, lease *AccountLease) (modelEntry, error) {
 	entry, err := c.modelEntry(ctx, request.AccountID, request.Model)
-	if err == nil || !errors.Is(err, ErrModelNotFound) {
+	if err == nil {
+		if request.Selection.Strict() {
+			native, ok := lease.buildModel(request.Model)
+			if !ok {
+				return modelEntry{}, fmt.Errorf("%w: Build catalog does not contain selected model", ErrModelNotFound)
+			}
+			// Keep known model/tool semantics, but never borrow PG continuation or
+			// token limits to claim that Build can honor this output budget.
+			entry.defaults.ContinuedOutputTokens = 0
+			entry.model = cloneAccountModels([]Model{entry.model})[0]
+			entry.model.Channels = []string{string(ChannelBuild)}
+			delete(entry.model.Capabilities, "output_continuation")
+			if native.OutputTokenLimit > 0 {
+				entry.defaults.MaxOutputTokens = native.OutputTokenLimit
+				entry.model.OutputTokenLimit = native.OutputTokenLimit
+			}
+			if native.InputTokenLimit > 0 {
+				entry.model.InputTokenLimit = native.InputTokenLimit
+			}
+		}
+		return entry, nil
+	}
+	if !errors.Is(err, ErrModelNotFound) {
 		return entry, err
 	}
 	model, ok := lease.buildModel(request.Model)

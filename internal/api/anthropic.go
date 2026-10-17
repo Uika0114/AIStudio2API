@@ -97,6 +97,10 @@ func (s *server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
+	if err := rejectRoutedModel(request.Model); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	messageID := newID("msg")
 	if err := s.decodeAnthropicSearchHistory(&request); err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -154,6 +158,10 @@ func (s *server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Reque
 	}
 	if request.Model == "" {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+	if err := rejectRoutedModel(request.Model); err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 	if err := s.decodeAnthropicSearchHistory(&request); err != nil {

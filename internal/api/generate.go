@@ -32,12 +32,16 @@ type generationResult struct {
 	finishMessage string
 	stopSequence  string
 	providerModel string
+	channel       aistudio.Channel
 	finished      bool
 }
 
 func (result *generationResult) apply(event aistudio.Event) error {
 	if event.ProviderModel != "" {
 		result.providerModel = event.ProviderModel
+	}
+	if event.Channel != "" {
+		result.channel = event.Channel
 	}
 	if event.Usage != nil {
 		usage := *event.Usage

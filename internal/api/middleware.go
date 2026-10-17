@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +51,8 @@ type accessLogMetadata struct {
 	queueWait       time.Duration
 	proof           time.Duration
 	attempts        []RequestAttempt
+	attemptIndex    map[string]int
+	ledger          RequestLedgerMetadata
 	authorized      bool
 }
 
@@ -82,6 +83,7 @@ type accessLogSnapshot struct {
 	queueWait       time.Duration
 	proof           time.Duration
 	attempts        []RequestAttempt
+	ledger          RequestLedgerMetadata
 	authorized      bool
 }
 
@@ -126,6 +128,9 @@ func (metadata *accessLogMetadata) setTarget(model string, account string) {
 	metadata.mu.Lock()
 	if model = strings.TrimSpace(model); model != "" {
 		metadata.model = strings.TrimPrefix(model, "models/")
+		if metadata.ledger.BaseModel != "" {
+			metadata.model = metadata.ledger.BaseModel
+		}
 	}
 	if account = strings.TrimSpace(account); account != "" {
 		metadata.account = account
@@ -143,6 +148,8 @@ func (metadata *accessLogMetadata) start(force bool) {
 	metadata.started = true
 	admin := metadata.admin
 	entry := AccessLog{
+		RequestLedgerMetadata: metadata.ledger.WithUsage(metadata.usage),
+		Attempts:              CloneRequestAttempts(metadata.attempts), Usage: cloneLedgerValue(metadata.usage),
 		Method: metadata.method, Path: metadata.path, Model: metadata.model, Account: metadata.account, Channel: metadata.channel,
 		Temperature: metadata.temperature, TopP: metadata.topP, Thinking: metadata.thinking,
 		MaxOutputTokens: metadata.maxOutputTokens, Generation: metadata.generation, RequestID: metadata.requestID,
@@ -230,7 +237,7 @@ func (metadata *accessLogMetadata) setGenerationInput(request aistudio.GenerateR
 		}
 	}
 	metadata.mu.Lock()
-	metadata.requestID = strings.TrimSpace(request.ID)
+	// request.ID is a generation/choice ID, never the HTTP access-log root ID.
 	metadata.inputMessages = len(request.Contents)
 	metadata.inputTextChars = textChars
 	metadata.inputMedia = media
@@ -261,13 +268,13 @@ func (metadata *accessLogMetadata) snapshot() accessLogSnapshot {
 		requestErr: metadata.err, canceled: metadata.canceled, detached: metadata.detached,
 		failureStatus: metadata.failureStatus,
 		firstEvent:    metadata.firstEvent,
-		upstreamBytes: metadata.upstreamBytes, usage: metadata.usage, toolCalls: metadata.toolCalls,
+		upstreamBytes: metadata.upstreamBytes, usage: cloneLedgerValue(metadata.usage), toolCalls: metadata.toolCalls,
 		inputMessages: metadata.inputMessages, inputTextChars: metadata.inputTextChars,
 		inputMedia: metadata.inputMedia, inputMediaBytes: metadata.inputMediaBytes, inputFiles: metadata.inputFiles,
 		temperature: metadata.temperature, topP: metadata.topP,
 		thinking: metadata.thinking, maxOutputTokens: metadata.maxOutputTokens, requestID: metadata.requestID,
 		queueWait: metadata.queueWait, proof: metadata.proof,
-		attempts: slices.Clone(metadata.attempts), authorized: metadata.authorized,
+		attempts: CloneRequestAttempts(metadata.attempts), ledger: metadata.ledger.WithUsage(metadata.usage), authorized: metadata.authorized,
 	}
 	metadata.mu.Unlock()
 	return snapshot
@@ -309,13 +316,106 @@ func markAccessLogAuthorized(ctx context.Context) {
 	}
 }
 
-// AddAccessLogAttempt 追加一次未成功的上游尝试
+// AddAccessLogAttempt preserves the legacy outer-failure path. It is not a
+// physical send observer, even when the same failure has a generation snapshot.
 func AddAccessLogAttempt(ctx context.Context, attempt RequestAttempt) {
 	if metadata, ok := ctx.Value(accessLogContextKey{}).(*accessLogMetadata); ok {
+		legacy := RequestAttempt{
+			Account: attempt.Account, Channel: attempt.Channel, Error: attempt.Error, DurationMS: attempt.DurationMS,
+			Kind: AttemptKindLegacy, Stage: "unknown", UsageSource: UsageSourceUnknown,
+		}
 		metadata.mu.Lock()
-		metadata.attempts = append(metadata.attempts, attempt)
+		metadata.attempts = append(metadata.attempts, legacy)
 		metadata.mu.Unlock()
 	}
+}
+
+// SetAccessLogModelSelection records the canonical selection supplied by the
+// core after alias/suffix resolution. It does not parse or route a request.
+func SetAccessLogModelSelection(ctx context.Context, selection aistudio.ModelSelection) {
+	if metadata, ok := ctx.Value(accessLogContextKey{}).(*accessLogMetadata); ok {
+		metadata.mu.Lock()
+		defer metadata.mu.Unlock()
+		if metadata.ledger.RequestedModel != "" && metadata.ledger.RequestedModel != selection.RequestedModel {
+			return // a secondary generation cannot replace the parent request policy
+		}
+		metadata.ledger.RequestedModel = selection.RequestedModel
+		metadata.ledger.BaseModel = selection.BaseModel
+		channel := string(selection.Channel)
+		metadata.ledger.RequestedChannel = &channel
+		metadata.ledger.AntiTruncation = cloneLedgerValue(&selection.AntiTruncation)
+		if selection.BaseModel != "" {
+			metadata.model = selection.BaseModel
+		}
+	}
+}
+
+// AddAccessLogGenerationAttempt upserts a core snapshot by physical attempt ID.
+// Revision is authoritative; duplicate or stale snapshots have no effect.
+// The caller must supply a fresh ID for every replay/fallback/continuation send.
+func AddAccessLogGenerationAttempt(ctx context.Context, attempt aistudio.GenerationAttempt, accountLabel string) {
+	metadata, ok := ctx.Value(accessLogContextKey{}).(*accessLogMetadata)
+	if !ok || attempt.ID == "" {
+		return
+	}
+	metadata.mu.Lock()
+	defer metadata.mu.Unlock()
+	if attempt.ParentID == "" {
+		attempt.ParentID = metadata.requestID
+	}
+	channel := string(attempt.RequestedChannel)
+	value := RequestAttempt{
+		Account: accountLabel, Channel: string(attempt.Channel), Error: attempt.Error, DurationMS: attempt.DurationMS,
+		Kind: AttemptKindGeneration, ID: attempt.ID, Revision: attempt.Revision, ContinuationRound: attempt.ContinuationRound,
+		RequestID: attempt.RequestID, ParentID: attempt.ParentID, RequestedModel: attempt.RequestedModel, BaseModel: attempt.BaseModel,
+		RequestedChannel: &channel, AntiTruncation: cloneLedgerValue(&attempt.AntiTruncation), AccountID: attempt.AccountID,
+		Method: attempt.Method, Mode: attempt.Mode, Reason: attempt.Reason, Stage: attempt.Stage,
+		Sent: cloneLedgerValue(&attempt.Sent), ResponseReceived: cloneLedgerValue(&attempt.ResponseReceived), StatusCode: attempt.StatusCode,
+		Usage: cloneLedgerValue(attempt.Usage), UsageSource: attemptUsageSource(attempt.Usage, attempt.UsageSource),
+	}
+	if value.Stage == "" {
+		value.Stage = "unknown"
+	}
+	if !attempt.StartedAt.IsZero() {
+		value.StartedAt = cloneLedgerValue(&attempt.StartedAt)
+	}
+	if metadata.attemptIndex == nil {
+		metadata.attemptIndex = make(map[string]int)
+	}
+	if index, exists := metadata.attemptIndex[attempt.ID]; exists {
+		previous := metadata.attempts[index]
+		if attempt.Revision <= previous.Revision || value.RequestID != previous.RequestID || value.ParentID != previous.ParentID {
+			return
+		}
+		// Observed evidence survives final error/cancel snapshots with absent usage.
+		if value.Usage == nil {
+			value.Usage, value.UsageSource = previous.Usage, previous.UsageSource
+		}
+		if *previous.Sent {
+			*value.Sent = true
+		}
+		if *previous.ResponseReceived {
+			*value.ResponseReceived = true
+		}
+		if value.StatusCode == 0 {
+			value.StatusCode = previous.StatusCode
+		}
+		value.StartedAt = previous.StartedAt
+		if value.StartedAt == nil && !attempt.StartedAt.IsZero() {
+			value.StartedAt = cloneLedgerValue(&attempt.StartedAt)
+		}
+		metadata.attempts[index] = value
+	} else {
+		metadata.attemptIndex[attempt.ID] = len(metadata.attempts)
+		metadata.attempts = append(metadata.attempts, value)
+	}
+	count, sent := len(metadata.attemptIndex), 0
+	for _, index := range metadata.attemptIndex {
+		if *metadata.attempts[index].Sent {
+			sent++
+		}
+	}
+	metadata.ledger.AttemptCount, metadata.ledger.SentAttemptCount = &count, &sent
 }
 
 // AddAccessLogProof 累计请求等待并生成 WAA proof 的时间
@@ -449,7 +549,8 @@ func requestLoggingMiddleware(admin AdminService, next http.Handler) http.Handle
 		}
 		if admin != nil {
 			admin.RecordAccessLog(AccessLog{
-				Status: status, Latency: time.Since(started), FirstEvent: snapshot.firstEvent,
+				RequestLedgerMetadata: snapshot.ledger,
+				Status:                status, Latency: time.Since(started), FirstEvent: snapshot.firstEvent,
 				QueueWait: snapshot.queueWait, Proof: snapshot.proof,
 				UpstreamBytes: snapshot.upstreamBytes, Usage: snapshot.usage, ToolCalls: snapshot.toolCalls,
 				InputMessages: snapshot.inputMessages, InputTextChars: snapshot.inputTextChars,

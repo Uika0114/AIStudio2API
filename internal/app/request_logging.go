@@ -13,7 +13,9 @@ import (
 // requestLogData 投影请求身份、参数与端到端用量
 func requestLogData(entry api.AccessLog) *api.RequestLog {
 	data := &api.RequestLog{
-		ID: entry.RequestID, Model: entry.Model, Method: entry.Method, Path: entry.Path,
+		RequestLedgerMetadata: entry.RequestLedgerMetadata.WithUsage(entry.Usage),
+		Attempts:              api.CloneRequestAttempts(entry.Attempts),
+		ID:                    entry.RequestID, Model: entry.Model, Method: entry.Method, Path: entry.Path,
 		Status: entry.Status, DurationMS: float64(entry.Latency) / float64(time.Millisecond),
 		ToolCalls: entry.ToolCalls, FinishReason: entry.FinishReason, Error: entry.Error,
 		InputMessages: entry.InputMessages, InputTextChars: entry.InputTextChars,
@@ -86,10 +88,11 @@ func (admin *runtimeAdmin) RecordAccessLog(entry api.AccessLog) {
 func requestRow(entry api.AccessLog, finished time.Time) requestdb.Row {
 	data, _, _ := finishedRequestLog(entry)
 	row := requestdb.Row{
-		ID: entry.RequestID, Time: finished, Protocol: requestProtocol(entry.Path), Path: entry.Path,
+		RequestLedgerMetadata: data.RequestLedgerMetadata.Clone(),
+		ID:                    entry.RequestID, Time: finished, Protocol: requestProtocol(entry.Path), Path: entry.Path,
 		Model: entry.Model, Account: entry.Account, Channel: entry.Channel, Status: entry.Status, State: data.State,
 		Duration: entry.Latency, FirstEvent: entry.FirstEvent, Queue: entry.QueueWait, ToolCalls: entry.ToolCalls, Error: data.Error,
-		Attempts: entry.Attempts,
+		Attempts: api.CloneRequestAttempts(entry.Attempts),
 	}
 	if usage := data.Usage; usage != nil {
 		row.InputTokens, row.CachedTokens, row.ReasoningTokens, row.ReplyTokens, row.TotalTokens =
