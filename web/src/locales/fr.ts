@@ -13,6 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': 'Mot de passe de la console',
   'settings.keepPassword': 'Laisser vide pour conserver le mot de passe actuel',
   'settings.buildNative': 'Privilégier Build pour les requêtes sans streaming',
+  'settings.antiTruncationSystemPrompt': "Ajouter la consigne système anti-troncature",
+  'settings.antiTruncationSystemPromptHelp':
+    "Ajoute la consigne system fixe uniquement aux variantes anti-troncature par outil. La désactivation conserve le schéma, le choix obligatoire des outils et la restitution du texte, sans supprimer les consignes originales ni l’historique. Activé par défaut.",
   'app.title': 'Console AI Studio',
   'app.console': 'Console',
   'app.gateway': 'Passerelle de protocoles',

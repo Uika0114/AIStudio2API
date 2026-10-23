@@ -13,6 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': '콘솔 비밀번호',
   'settings.keepPassword': '비워 두면 현재 비밀번호가 유지됩니다',
   'settings.buildNative': '스트리밍이 아닌 요청에 Build 우선 사용',
+  'settings.antiTruncationSystemPrompt': "잘림 방지 시스템 지침 추가",
+  'settings.antiTruncationSystemPromptHelp':
+    "도구 기반 잘림 방지 모델에만 고정 system 지침을 추가합니다. 꺼도 도구 정의, 필수 도구 선택과 본문 추출은 유지되며 원래 system이나 기록의 지침은 삭제하지 않습니다. 기본값은 켜짐입니다.",
   'app.title': 'AI Studio 콘솔',
   'app.console': '콘솔',
   'app.gateway': '프로토콜 게이트웨이',

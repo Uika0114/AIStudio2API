@@ -13,6 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': 'Konsolenpasswort',
   'settings.keepPassword': 'Leer lassen, um das aktuelle Passwort zu behalten',
   'settings.buildNative': 'Build für Anfragen ohne Streaming bevorzugen',
+  'settings.antiTruncationSystemPrompt': "Anti-Trunkierungs-Systemanweisung anhängen",
+  'settings.antiTruncationSystemPromptHelp':
+    "Hängt die feste system-Anweisung nur bei Tool-Anti-Trunkierungsvarianten an. Ausschalten behält Tool-Schema, verpflichtende Tool-Auswahl und Textausgabe bei und entfernt keine Anweisungen aus dem ursprünglichen Systemtext oder Verlauf. Standardmäßig aktiviert.",
   'app.title': 'AI Studio Konsole',
   'app.console': 'Konsole',
   'app.gateway': 'Protokoll-Gateway',

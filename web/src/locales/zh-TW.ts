@@ -13,6 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': '主控台密碼',
   'settings.keepPassword': '留空則保留目前的密碼',
   'settings.buildNative': '非串流請求優先使用 Build',
+  'settings.antiTruncationSystemPrompt': "抗截斷附加系統提示",
+  'settings.antiTruncationSystemPromptHelp':
+    "僅對工具抗截斷變體附加固定 system 提示。關閉後仍保留工具定義、強制工具選擇與正文解包；不會刪除原始 system 或歷史中的指令。預設開啟。",
   'app.title': 'AI Studio 主控台',
   'app.console': '主控台',
   'app.gateway': '協定閘道',

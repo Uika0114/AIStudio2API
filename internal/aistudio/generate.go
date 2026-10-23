@@ -746,7 +746,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		if clientTools.ToolConfig.Mode == "none" {
 			transportRequest.Tools = clientTools
 		}
-		request, transport, err = PrepareAntiTruncation(transportRequest)
+		request, transport, err = prepareAntiTruncation(transportRequest, !c.disableAntiTruncationSystemPrompt)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 		}

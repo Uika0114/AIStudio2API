@@ -28,7 +28,7 @@ import (
 const antiTruncationTransportBaseName = "aistudio2api_emit_v1"
 
 // antiTruncationTransportDescription 是运输函数声明的固定说明，不随请求变化。
-const antiTruncationTransportDescription = "Internal transport for the complete final answer only. Call this function once with the full final answer text in the \"content\" string argument. It performs no external action and must never be used for any other purpose."
+const antiTruncationTransportDescription = "Submit the complete user-facing reply for the current interaction. Every user-facing reply MUST be submitted through this function, including answers, clarification questions, confirmations, refusals, and progress updates. Final means the reply for this interaction, not completion of the overall task. The content is displayed verbatim to the user. Use exactly one call for that reply and at most one call per model response. Submission cannot delete, replace, retract, or revise any previously emitted text. This function only delivers text and performs no external action. Continue to use real tools when needed; a response containing only real tool calls needs no reply submission, and this function cannot satisfy a required real tool call."
 
 // antiTruncationSystemInstruction 是注入的固定控制提示模板，只有函数名随避碰结果变化。
 const antiTruncationSystemInstruction = "Honor the caller requirements for real tools first; the internal transport cannot satisfy a required real tool call. When a final answer is appropriate, deliver its complete text by calling the internal function %q exactly once, placing the full final answer in its \"content\" string argument. That function only transports text and performs no external action; do not use it for any other purpose and do not call it more than once."
@@ -89,6 +89,12 @@ func (transport *AntiTruncationTransport) Name() string {
 //     追加；required/allowlist/parallel 语义保留在真实工具上，运输不进入它们的必选列表。
 //   - 同名客户端工具通过确定性避碰（_2/_3）保留原名，运输只吞本次注入的 exact 名称。
 func PrepareAntiTruncation(request GenerateRequest) (GenerateRequest, *AntiTruncationTransport, error) {
+	return prepareAntiTruncation(request, true)
+}
+
+// prepareAntiTruncation only gates the additional system instruction; transport
+// schema, tool choice, projection and fallback keep their existing contracts.
+func prepareAntiTruncation(request GenerateRequest, appendSystemPrompt bool) (GenerateRequest, *AntiTruncationTransport, error) {
 	mode := request.Tools.ToolConfig.Mode
 	switch mode {
 	case "", "auto", "required", "validated", "none":
@@ -146,7 +152,9 @@ func PrepareAntiTruncation(request GenerateRequest) (GenerateRequest, *AntiTrunc
 		}
 		upstream.Tools.ToolConfig.AllowedFunctionNames = allowed
 	}
-	upstream.System = appendSystemInstruction(upstream.System, fmt.Sprintf(antiTruncationSystemInstruction, name))
+	if appendSystemPrompt {
+		upstream.System = appendSystemInstruction(upstream.System, fmt.Sprintf(antiTruncationSystemInstruction, name))
+	}
 
 	return upstream, &AntiTruncationTransport{name: name, textLimit: antiTruncationTextBufferLimit}, nil
 }
@@ -323,7 +331,7 @@ func antiTruncationTransportDeclaration(name string) FunctionDeclaration {
 	return FunctionDeclaration{
 		Name:        name,
 		Description: antiTruncationTransportDescription,
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"content":{"type":"string","description":"The complete final answer text."}},"required":["content"]}`),
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"content":{"type":"string","description":"The complete reply to display to the user, exactly as written. Include only the reply itself, not drafts, alternative versions, self-editing commentary, or instructions to change the submitted text. Such instructions would be displayed as ordinary text, not executed."}},"required":["content"]}`),
 	}
 }
 

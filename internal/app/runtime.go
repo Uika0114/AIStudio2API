@@ -110,9 +110,10 @@ func newRuntime(
 	refresher := newAuthRuntimeRefresher(workers, headers, requests, globalProxy)
 	workers.refresher = refresher
 	client, err := aistudio.NewClient(aistudio.ClientOptions{
-		Transport:       &authRetryTransport{transport: transport, refresher: refresher},
-		Protected:       &authRetryProtectedTransport{transport: protected, refresher: refresher},
-		ContextProvider: requestContext,
+		Transport:                         &authRetryTransport{transport: transport, refresher: refresher},
+		Protected:                         &authRetryProtectedTransport{transport: protected, refresher: refresher},
+		ContextProvider:                   requestContext,
+		DisableAntiTruncationSystemPrompt: !cfg.AntiTruncationSystemPrompt,
 	})
 	if err != nil {
 		transport.CloseIdleConnections()

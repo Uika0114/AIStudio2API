@@ -804,8 +804,9 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		RequestBodyLog: value.RequestBodyLog,
 		LogFile:        value.LogFile, LogMaxTotalMB: value.LogMaxTotalMB,
 		AdminAuthEnabled: value.AdminAuthEnabled, AdminUsername: strings.TrimSpace(value.AdminUsername), AdminPassword: password,
-		BuildNativeNonstream: value.BuildNativeNonstream,
-		AuthStates:           value.AuthStates, ListenAddr: value.ListenAddr, ProxyAPIKey: value.APIKey,
+		BuildNativeNonstream:       value.BuildNativeNonstream,
+		AntiTruncationSystemPrompt: saved.AntiTruncationSystemPrompt,
+		AuthStates:                 value.AuthStates, ListenAddr: value.ListenAddr, ProxyAPIKey: value.APIKey,
 		Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout,
 		WarmWorkerLimit: value.WarmWorkerLimit, MaxActiveWorkers: value.MaxActiveWorkers,
 		WarmStartupConcurrency: value.WarmStartupConcurrency,
@@ -815,6 +816,9 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
 		TemporaryChat:          value.TemporaryChat,
 		WAABackend:             value.WAABackend,
+	}
+	if value.AntiTruncationSystemPrompt != nil {
+		cfg.AntiTruncationSystemPrompt = *value.AntiTruncationSystemPrompt
 	}
 	if err := cfg.Validate(); err != nil {
 		return api.RuntimeConfig{}, invalidConfigError(err)
@@ -1399,8 +1403,9 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		LogFile:        cfg.LogFile, LogMaxTotalMB: cfg.LogMaxTotalMB,
 		AdminAuthEnabled: cfg.AdminAuthEnabled, AdminUsername: cfg.AdminUsername,
 		AdminPasswordSet: cfg.AdminPassword != "", SavedAdminPassword: cfg.AdminPassword,
-		BuildNativeNonstream: cfg.BuildNativeNonstream,
-		AuthStates:           cfg.AuthStates, ListenAddr: cfg.ListenAddr, APIKey: cfg.ProxyAPIKey,
+		BuildNativeNonstream:       cfg.BuildNativeNonstream,
+		AntiTruncationSystemPrompt: &cfg.AntiTruncationSystemPrompt,
+		AuthStates:                 cfg.AuthStates, ListenAddr: cfg.ListenAddr, APIKey: cfg.ProxyAPIKey,
 		ActiveListenAddr: cfg.ListenAddr, ActiveAPIKey: cfg.ProxyAPIKey,
 		Proxy: cfg.Proxy, InitTimeout: cfg.InitTimeout.String(), RequestTimeout: cfg.RequestTimeout.String(),
 		WarmWorkerLimit: cfg.WarmWorkerLimit, MaxActiveWorkers: cfg.MaxActiveWorkers,

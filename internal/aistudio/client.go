@@ -77,17 +77,21 @@ type ClientOptions struct {
 	Transport       RPCTransport
 	Protected       ProtectedTransport
 	ContextProvider RequestContextProvider
+	// DisableAntiTruncationSystemPrompt omits only the extra system instruction.
+	// The zero value retains the legacy enabled behavior. Immutable per client.
+	DisableAntiTruncationSystemPrompt bool
 }
 
 // Client 实现 AI Studio 私有协议核心
 type Client struct {
-	transport       RPCTransport
-	protected       ProtectedTransport
-	contextProvider RequestContextProvider
-	catalogMu       sync.RWMutex
-	catalogs        map[string]modelCatalog
-	tierMu          sync.RWMutex
-	tiers           map[string]BenefitTier
+	transport                         RPCTransport
+	protected                         ProtectedTransport
+	contextProvider                   RequestContextProvider
+	disableAntiTruncationSystemPrompt bool
+	catalogMu                         sync.RWMutex
+	catalogs                          map[string]modelCatalog
+	tierMu                            sync.RWMutex
+	tiers                             map[string]BenefitTier
 }
 
 var _ Service = (*Client)(nil)
@@ -101,11 +105,12 @@ func NewClient(options ClientOptions) (*Client, error) {
 		return nil, fmt.Errorf("AI Studio protected transport 不能为空")
 	}
 	return &Client{
-		transport:       options.Transport,
-		protected:       options.Protected,
-		contextProvider: options.ContextProvider,
-		catalogs:        make(map[string]modelCatalog),
-		tiers:           make(map[string]BenefitTier),
+		transport:                         options.Transport,
+		protected:                         options.Protected,
+		contextProvider:                   options.ContextProvider,
+		disableAntiTruncationSystemPrompt: options.DisableAntiTruncationSystemPrompt,
+		catalogs:                          make(map[string]modelCatalog),
+		tiers:                             make(map[string]BenefitTier),
 	}, nil
 }
 

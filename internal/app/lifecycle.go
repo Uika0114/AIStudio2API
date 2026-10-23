@@ -516,10 +516,14 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 	saved := config.Config{
 		AuthStates: value.AuthStates, Proxy: value.Proxy,
 		InitTimeout: initTimeout, RequestTimeout: requestTimeout, TemporaryChat: value.TemporaryChat,
-		UpstreamChannels:     value.UpstreamChannels,
-		ModelMapping:         value.ModelMapping,
-		WAABackend:           value.WAABackend,
-		BuildNativeNonstream: value.BuildNativeNonstream,
+		UpstreamChannels:           value.UpstreamChannels,
+		ModelMapping:               value.ModelMapping,
+		WAABackend:                 value.WAABackend,
+		BuildNativeNonstream:       value.BuildNativeNonstream,
+		AntiTruncationSystemPrompt: active.AntiTruncationSystemPrompt,
+	}
+	if value.AntiTruncationSystemPrompt != nil {
+		saved.AntiTruncationSystemPrompt = *value.AntiTruncationSystemPrompt
 	}
 	overrides.Apply(&saved)
 	return saved.AuthStates == active.AuthStates && saved.Proxy == active.Proxy &&
@@ -527,6 +531,7 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 		saved.TemporaryChat == active.TemporaryChat &&
 		slices.Equal(saved.UpstreamChannels, active.UpstreamChannels) && saved.ModelMapping == active.ModelMapping &&
 		saved.WAABackend == active.WAABackend &&
+		saved.AntiTruncationSystemPrompt == active.AntiTruncationSystemPrompt &&
 		saved.BuildNativeNonstream == active.BuildNativeNonstream
 }
 

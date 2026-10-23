@@ -205,37 +205,39 @@ type ChromeImportInput struct {
 
 // RuntimeConfig 表示全局运行配置
 type RuntimeConfig struct {
-	AutoStart                 bool         `json:"auto_start"`
-	RequestBodyLog            bool         `json:"request_body_log"`
-	AdminAuthEnabled          bool         `json:"admin_auth_enabled"`
-	AdminUsername             string       `json:"admin_username"`
-	AdminPassword             *string      `json:"admin_password,omitempty"`
-	AdminPasswordSet          bool         `json:"admin_password_set"`
-	SavedAdminPassword        string       `json:"-"`
-	BuildNativeNonstream      bool         `json:"build_native_nonstream"`
-	LogFile                   bool         `json:"log_file"`
-	LogMaxTotalMB             int          `json:"log_max_total_mb"`
-	AuthStates                string       `json:"auth_states"`
-	ListenAddr                string       `json:"listen_addr"`
-	APIKey                    string       `json:"proxy_api_key"`
-	ActiveListenAddr          string       `json:"active_listen_addr"`
-	ActiveAPIKey              string       `json:"active_proxy_api_key"`
-	ManagementRestartRequired bool         `json:"management_restart_required"`
-	ServiceRestartRequired    bool         `json:"service_restart_required"`
-	Proxy                     string       `json:"proxy"`
-	ActiveProxy               string       `json:"active_proxy"`
-	ProxyPool                 []AdminProxy `json:"proxy_pool"`
-	InitTimeout               string       `json:"init_timeout"`
-	RequestTimeout            string       `json:"request_timeout"`
-	WarmWorkerLimit           int          `json:"warm_worker_limit"`
-	MaxActiveWorkers          int          `json:"max_active_workers"`
-	WarmStartupConcurrency    int          `json:"warm_startup_concurrency"`
-	PerAccountConcurrency     int          `json:"per_account_concurrency"`
-	RoutingStrategy           string       `json:"routing_strategy"`
-	UpstreamChannels          []string     `json:"upstream_channels"`
-	ModelMapping              string       `json:"model_mapping"`
-	TemporaryChat             bool         `json:"temporary_chat"`
-	WAABackend                string       `json:"waa_backend"`
+	AutoStart            bool    `json:"auto_start"`
+	RequestBodyLog       bool    `json:"request_body_log"`
+	AdminAuthEnabled     bool    `json:"admin_auth_enabled"`
+	AdminUsername        string  `json:"admin_username"`
+	AdminPassword        *string `json:"admin_password,omitempty"`
+	AdminPasswordSet     bool    `json:"admin_password_set"`
+	SavedAdminPassword   string  `json:"-"`
+	BuildNativeNonstream bool    `json:"build_native_nonstream"`
+	// Nil on an old client update preserves the saved setting. GET always includes it.
+	AntiTruncationSystemPrompt *bool        `json:"anti_truncation_system_prompt,omitempty"`
+	LogFile                    bool         `json:"log_file"`
+	LogMaxTotalMB              int          `json:"log_max_total_mb"`
+	AuthStates                 string       `json:"auth_states"`
+	ListenAddr                 string       `json:"listen_addr"`
+	APIKey                     string       `json:"proxy_api_key"`
+	ActiveListenAddr           string       `json:"active_listen_addr"`
+	ActiveAPIKey               string       `json:"active_proxy_api_key"`
+	ManagementRestartRequired  bool         `json:"management_restart_required"`
+	ServiceRestartRequired     bool         `json:"service_restart_required"`
+	Proxy                      string       `json:"proxy"`
+	ActiveProxy                string       `json:"active_proxy"`
+	ProxyPool                  []AdminProxy `json:"proxy_pool"`
+	InitTimeout                string       `json:"init_timeout"`
+	RequestTimeout             string       `json:"request_timeout"`
+	WarmWorkerLimit            int          `json:"warm_worker_limit"`
+	MaxActiveWorkers           int          `json:"max_active_workers"`
+	WarmStartupConcurrency     int          `json:"warm_startup_concurrency"`
+	PerAccountConcurrency      int          `json:"per_account_concurrency"`
+	RoutingStrategy            string       `json:"routing_strategy"`
+	UpstreamChannels           []string     `json:"upstream_channels"`
+	ModelMapping               string       `json:"model_mapping"`
+	TemporaryChat              bool         `json:"temporary_chat"`
+	WAABackend                 string       `json:"waa_backend"`
 }
 
 // AdminCooldown 表示账户模型冷却

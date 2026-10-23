@@ -13,6 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': 'Console password',
   'settings.keepPassword': 'Leave blank to keep the current password',
   'settings.buildNative': 'Prefer Build for non-streaming requests',
+  'settings.antiTruncationSystemPrompt': "Append anti-truncation system instruction",
+  'settings.antiTruncationSystemPromptHelp':
+    "Append the fixed system instruction only for tool anti-truncation variants. Turning this off keeps the tool schema, required tool choice and text projection; it does not remove instructions from the original system or history. Enabled by default.",
   'app.title': 'AI Studio Console',
   'app.console': 'Console',
   'app.gateway': 'Protocol gateway',

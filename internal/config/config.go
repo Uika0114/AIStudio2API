@@ -50,6 +50,7 @@ var configKeys = [...]string{
 	"ADMIN_USERNAME",
 	"ADMIN_PASSWORD",
 	"BUILD_NATIVE_NONSTREAM",
+	"ANTI_TRUNCATION_SYSTEM_PROMPT",
 }
 
 // LogFileMB 是单个日志文件的轮转大小
@@ -66,49 +67,51 @@ const WAABackendGo = "go"
 
 // Config 保存服务的全局配置
 type Config struct {
-	AutoStart              bool          `json:"auto_start"`
-	RequestBodyLog         bool          `json:"request_body_log"`
-	LogFile                bool          `json:"log_file"`
-	LogMaxTotalMB          int           `json:"log_max_total_mb"`
-	AdminAuthEnabled       bool          `json:"admin_auth_enabled"`
-	AdminUsername          string        `json:"admin_username"`
-	AdminPassword          string        `json:"-"`
-	BuildNativeNonstream   bool          `json:"build_native_nonstream"`
-	AuthStates             string        `json:"auth_states"`
-	ListenAddr             string        `json:"listen_addr"`
-	ProxyAPIKey            string        `json:"proxy_api_key"`
-	Proxy                  string        `json:"proxy"`
-	InitTimeout            time.Duration `json:"-"`
-	RequestTimeout         time.Duration `json:"-"`
-	WarmWorkerLimit        int           `json:"warm_worker_limit"`
-	MaxActiveWorkers       int           `json:"max_active_workers"`
-	WarmStartupConcurrency int           `json:"warm_startup_concurrency"`
-	PerAccountConcurrency  int           `json:"per_account_concurrency"`
-	RoutingStrategy        string        `json:"routing_strategy"`
-	UpstreamChannels       []string      `json:"upstream_channels"`
-	ModelMapping           string        `json:"model_mapping"`
-	TemporaryChat          bool          `json:"temporary_chat"`
-	WAABackend             string        `json:"waa_backend"`
+	AutoStart                  bool          `json:"auto_start"`
+	RequestBodyLog             bool          `json:"request_body_log"`
+	LogFile                    bool          `json:"log_file"`
+	LogMaxTotalMB              int           `json:"log_max_total_mb"`
+	AdminAuthEnabled           bool          `json:"admin_auth_enabled"`
+	AdminUsername              string        `json:"admin_username"`
+	AdminPassword              string        `json:"-"`
+	BuildNativeNonstream       bool          `json:"build_native_nonstream"`
+	AntiTruncationSystemPrompt bool          `json:"anti_truncation_system_prompt"`
+	AuthStates                 string        `json:"auth_states"`
+	ListenAddr                 string        `json:"listen_addr"`
+	ProxyAPIKey                string        `json:"proxy_api_key"`
+	Proxy                      string        `json:"proxy"`
+	InitTimeout                time.Duration `json:"-"`
+	RequestTimeout             time.Duration `json:"-"`
+	WarmWorkerLimit            int           `json:"warm_worker_limit"`
+	MaxActiveWorkers           int           `json:"max_active_workers"`
+	WarmStartupConcurrency     int           `json:"warm_startup_concurrency"`
+	PerAccountConcurrency      int           `json:"per_account_concurrency"`
+	RoutingStrategy            string        `json:"routing_strategy"`
+	UpstreamChannels           []string      `json:"upstream_channels"`
+	ModelMapping               string        `json:"model_mapping"`
+	TemporaryChat              bool          `json:"temporary_chat"`
+	WAABackend                 string        `json:"waa_backend"`
 }
 
 // Default 返回可直接启动的默认配置
 func Default() Config {
 	return Config{
-		AdminUsername:          "admin",
-		LogFile:                true,
-		LogMaxTotalMB:          500,
-		BuildNativeNonstream:   true,
-		AuthStates:             defaultAuthStates,
-		ListenAddr:             defaultListenAddr,
-		InitTimeout:            defaultInitTimeout,
-		RequestTimeout:         defaultRequestTimeout,
-		WarmWorkerLimit:        defaultWarmWorkerLimit,
-		MaxActiveWorkers:       defaultMaxActiveWorkers,
-		WarmStartupConcurrency: defaultWarmConcurrency,
-		PerAccountConcurrency:  defaultAccountConcurrency,
-		RoutingStrategy:        "round-robin",
-		UpstreamChannels:       []string{"playground", "build"},
-		WAABackend:             WAABackendCamoufox,
+		AdminUsername:              "admin",
+		LogFile:                    true,
+		LogMaxTotalMB:              500,
+		BuildNativeNonstream:       true,
+		AntiTruncationSystemPrompt: true,
+		AuthStates:                 defaultAuthStates,
+		ListenAddr:                 defaultListenAddr,
+		InitTimeout:                defaultInitTimeout,
+		RequestTimeout:             defaultRequestTimeout,
+		WarmWorkerLimit:            defaultWarmWorkerLimit,
+		MaxActiveWorkers:           defaultMaxActiveWorkers,
+		WarmStartupConcurrency:     defaultWarmConcurrency,
+		PerAccountConcurrency:      defaultAccountConcurrency,
+		RoutingStrategy:            "round-robin",
+		UpstreamChannels:           []string{"playground", "build"},
+		WAABackend:                 WAABackendCamoufox,
 	}
 }
 
@@ -165,6 +168,12 @@ func Load(path string) (Config, error) {
 		cfg.BuildNativeNonstream, err = strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
 			return Config{}, fmt.Errorf("BUILD_NATIVE_NONSTREAM 必须是 true 或 false")
+		}
+	}
+	if value, ok := values["ANTI_TRUNCATION_SYSTEM_PROMPT"]; ok {
+		cfg.AntiTruncationSystemPrompt, err = strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return Config{}, fmt.Errorf("ANTI_TRUNCATION_SYSTEM_PROMPT 必须是 true 或 false")
 		}
 	}
 	if value, ok := values["AISTUDIO_AUTH_STATES"]; ok {
@@ -245,29 +254,30 @@ func (c Config) Save(path string) error {
 		return err
 	}
 	values := map[string]string{
-		"AUTO_START":               strconv.FormatBool(c.AutoStart),
-		"REQUEST_BODY_LOG":         strconv.FormatBool(c.RequestBodyLog),
-		"LOG_FILE":                 strconv.FormatBool(c.LogFile),
-		"LOG_MAX_TOTAL_MB":         strconv.Itoa(c.LogMaxTotalMB),
-		"ADMIN_AUTH_ENABLED":       strconv.FormatBool(c.AdminAuthEnabled),
-		"ADMIN_USERNAME":           c.AdminUsername,
-		"ADMIN_PASSWORD":           c.AdminPassword,
-		"BUILD_NATIVE_NONSTREAM":   strconv.FormatBool(c.BuildNativeNonstream),
-		"AISTUDIO_AUTH_STATES":     c.AuthStates,
-		"LISTEN_ADDR":              c.ListenAddr,
-		"PROXY_API_KEY":            c.ProxyAPIKey,
-		"PROXY":                    c.Proxy,
-		"INIT_TIMEOUT":             c.InitTimeout.String(),
-		"REQUEST_TIMEOUT":          c.RequestTimeout.String(),
-		"WARM_WORKER_LIMIT":        strconv.Itoa(c.WarmWorkerLimit),
-		"MAX_ACTIVE_WORKERS":       strconv.Itoa(c.MaxActiveWorkers),
-		"WARM_STARTUP_CONCURRENCY": strconv.Itoa(c.WarmStartupConcurrency),
-		"PER_ACCOUNT_CONCURRENCY":  strconv.Itoa(c.PerAccountConcurrency),
-		"ROUTING_STRATEGY":         c.RoutingStrategy,
-		"UPSTREAM_CHANNELS":        strings.Join(c.UpstreamChannels, ","),
-		"MODEL_MAPPING":            c.ModelMapping,
-		"TEMPORARY_CHAT":           strconv.FormatBool(c.TemporaryChat),
-		"WAA_BACKEND":              c.WAABackend,
+		"AUTO_START":                    strconv.FormatBool(c.AutoStart),
+		"REQUEST_BODY_LOG":              strconv.FormatBool(c.RequestBodyLog),
+		"LOG_FILE":                      strconv.FormatBool(c.LogFile),
+		"LOG_MAX_TOTAL_MB":              strconv.Itoa(c.LogMaxTotalMB),
+		"ADMIN_AUTH_ENABLED":            strconv.FormatBool(c.AdminAuthEnabled),
+		"ADMIN_USERNAME":                c.AdminUsername,
+		"ADMIN_PASSWORD":                c.AdminPassword,
+		"BUILD_NATIVE_NONSTREAM":        strconv.FormatBool(c.BuildNativeNonstream),
+		"ANTI_TRUNCATION_SYSTEM_PROMPT": strconv.FormatBool(c.AntiTruncationSystemPrompt),
+		"AISTUDIO_AUTH_STATES":          c.AuthStates,
+		"LISTEN_ADDR":                   c.ListenAddr,
+		"PROXY_API_KEY":                 c.ProxyAPIKey,
+		"PROXY":                         c.Proxy,
+		"INIT_TIMEOUT":                  c.InitTimeout.String(),
+		"REQUEST_TIMEOUT":               c.RequestTimeout.String(),
+		"WARM_WORKER_LIMIT":             strconv.Itoa(c.WarmWorkerLimit),
+		"MAX_ACTIVE_WORKERS":            strconv.Itoa(c.MaxActiveWorkers),
+		"WARM_STARTUP_CONCURRENCY":      strconv.Itoa(c.WarmStartupConcurrency),
+		"PER_ACCOUNT_CONCURRENCY":       strconv.Itoa(c.PerAccountConcurrency),
+		"ROUTING_STRATEGY":              c.RoutingStrategy,
+		"UPSTREAM_CHANNELS":             strings.Join(c.UpstreamChannels, ","),
+		"MODEL_MAPPING":                 c.ModelMapping,
+		"TEMPORARY_CHAT":                strconv.FormatBool(c.TemporaryChat),
+		"WAA_BACKEND":                   c.WAABackend,
 	}
 
 	var output strings.Builder
@@ -402,81 +412,84 @@ func validateUpstreamChannels(channels []string) error {
 // MarshalJSON 将时长输出为 env 使用的文本格式
 func (c Config) MarshalJSON() ([]byte, error) {
 	type payload struct {
-		AutoStart              bool     `json:"auto_start"`
-		RequestBodyLog         bool     `json:"request_body_log"`
-		LogFile                bool     `json:"log_file"`
-		LogMaxTotalMB          int      `json:"log_max_total_mb"`
-		AdminAuthEnabled       bool     `json:"admin_auth_enabled"`
-		AdminUsername          string   `json:"admin_username"`
-		BuildNativeNonstream   bool     `json:"build_native_nonstream"`
-		AuthStates             string   `json:"auth_states"`
-		ListenAddr             string   `json:"listen_addr"`
-		ProxyAPIKey            string   `json:"proxy_api_key"`
-		Proxy                  string   `json:"proxy"`
-		InitTimeout            string   `json:"init_timeout"`
-		RequestTimeout         string   `json:"request_timeout"`
-		WarmWorkerLimit        int      `json:"warm_worker_limit"`
-		MaxActiveWorkers       int      `json:"max_active_workers"`
-		WarmStartupConcurrency int      `json:"warm_startup_concurrency"`
-		PerAccountConcurrency  int      `json:"per_account_concurrency"`
-		RoutingStrategy        string   `json:"routing_strategy"`
-		UpstreamChannels       []string `json:"upstream_channels"`
-		ModelMapping           string   `json:"model_mapping"`
-		TemporaryChat          bool     `json:"temporary_chat"`
-		WAABackend             string   `json:"waa_backend"`
+		AutoStart                  bool     `json:"auto_start"`
+		RequestBodyLog             bool     `json:"request_body_log"`
+		LogFile                    bool     `json:"log_file"`
+		LogMaxTotalMB              int      `json:"log_max_total_mb"`
+		AdminAuthEnabled           bool     `json:"admin_auth_enabled"`
+		AdminUsername              string   `json:"admin_username"`
+		BuildNativeNonstream       bool     `json:"build_native_nonstream"`
+		AntiTruncationSystemPrompt bool     `json:"anti_truncation_system_prompt"`
+		AuthStates                 string   `json:"auth_states"`
+		ListenAddr                 string   `json:"listen_addr"`
+		ProxyAPIKey                string   `json:"proxy_api_key"`
+		Proxy                      string   `json:"proxy"`
+		InitTimeout                string   `json:"init_timeout"`
+		RequestTimeout             string   `json:"request_timeout"`
+		WarmWorkerLimit            int      `json:"warm_worker_limit"`
+		MaxActiveWorkers           int      `json:"max_active_workers"`
+		WarmStartupConcurrency     int      `json:"warm_startup_concurrency"`
+		PerAccountConcurrency      int      `json:"per_account_concurrency"`
+		RoutingStrategy            string   `json:"routing_strategy"`
+		UpstreamChannels           []string `json:"upstream_channels"`
+		ModelMapping               string   `json:"model_mapping"`
+		TemporaryChat              bool     `json:"temporary_chat"`
+		WAABackend                 string   `json:"waa_backend"`
 	}
 	return json.Marshal(payload{
-		AutoStart:              c.AutoStart,
-		RequestBodyLog:         c.RequestBodyLog,
-		LogFile:                c.LogFile,
-		LogMaxTotalMB:          c.LogMaxTotalMB,
-		AdminAuthEnabled:       c.AdminAuthEnabled,
-		AdminUsername:          c.AdminUsername,
-		BuildNativeNonstream:   c.BuildNativeNonstream,
-		AuthStates:             c.AuthStates,
-		ListenAddr:             c.ListenAddr,
-		ProxyAPIKey:            c.ProxyAPIKey,
-		Proxy:                  c.Proxy,
-		InitTimeout:            c.InitTimeout.String(),
-		RequestTimeout:         c.RequestTimeout.String(),
-		WarmWorkerLimit:        c.WarmWorkerLimit,
-		MaxActiveWorkers:       c.MaxActiveWorkers,
-		WarmStartupConcurrency: c.WarmStartupConcurrency,
-		PerAccountConcurrency:  c.PerAccountConcurrency,
-		RoutingStrategy:        c.RoutingStrategy,
-		UpstreamChannels:       c.UpstreamChannels,
-		ModelMapping:           c.ModelMapping,
-		TemporaryChat:          c.TemporaryChat,
-		WAABackend:             c.WAABackend,
+		AutoStart:                  c.AutoStart,
+		RequestBodyLog:             c.RequestBodyLog,
+		LogFile:                    c.LogFile,
+		LogMaxTotalMB:              c.LogMaxTotalMB,
+		AdminAuthEnabled:           c.AdminAuthEnabled,
+		AdminUsername:              c.AdminUsername,
+		BuildNativeNonstream:       c.BuildNativeNonstream,
+		AntiTruncationSystemPrompt: c.AntiTruncationSystemPrompt,
+		AuthStates:                 c.AuthStates,
+		ListenAddr:                 c.ListenAddr,
+		ProxyAPIKey:                c.ProxyAPIKey,
+		Proxy:                      c.Proxy,
+		InitTimeout:                c.InitTimeout.String(),
+		RequestTimeout:             c.RequestTimeout.String(),
+		WarmWorkerLimit:            c.WarmWorkerLimit,
+		MaxActiveWorkers:           c.MaxActiveWorkers,
+		WarmStartupConcurrency:     c.WarmStartupConcurrency,
+		PerAccountConcurrency:      c.PerAccountConcurrency,
+		RoutingStrategy:            c.RoutingStrategy,
+		UpstreamChannels:           c.UpstreamChannels,
+		ModelMapping:               c.ModelMapping,
+		TemporaryChat:              c.TemporaryChat,
+		WAABackend:                 c.WAABackend,
 	})
 }
 
 // UnmarshalJSON 从管理接口使用的文本时长解析配置
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type payload struct {
-		AutoStart              bool     `json:"auto_start"`
-		RequestBodyLog         bool     `json:"request_body_log"`
-		LogFile                bool     `json:"log_file"`
-		LogMaxTotalMB          int      `json:"log_max_total_mb"`
-		AdminAuthEnabled       bool     `json:"admin_auth_enabled"`
-		AdminUsername          string   `json:"admin_username"`
-		AdminPassword          string   `json:"admin_password"`
-		BuildNativeNonstream   bool     `json:"build_native_nonstream"`
-		AuthStates             string   `json:"auth_states"`
-		ListenAddr             string   `json:"listen_addr"`
-		ProxyAPIKey            string   `json:"proxy_api_key"`
-		Proxy                  string   `json:"proxy"`
-		InitTimeout            string   `json:"init_timeout"`
-		RequestTimeout         string   `json:"request_timeout"`
-		WarmWorkerLimit        int      `json:"warm_worker_limit"`
-		MaxActiveWorkers       int      `json:"max_active_workers"`
-		WarmStartupConcurrency int      `json:"warm_startup_concurrency"`
-		PerAccountConcurrency  int      `json:"per_account_concurrency"`
-		RoutingStrategy        string   `json:"routing_strategy"`
-		UpstreamChannels       []string `json:"upstream_channels"`
-		ModelMapping           string   `json:"model_mapping"`
-		TemporaryChat          bool     `json:"temporary_chat"`
-		WAABackend             string   `json:"waa_backend"`
+		AutoStart                  bool     `json:"auto_start"`
+		RequestBodyLog             bool     `json:"request_body_log"`
+		LogFile                    bool     `json:"log_file"`
+		LogMaxTotalMB              int      `json:"log_max_total_mb"`
+		AdminAuthEnabled           bool     `json:"admin_auth_enabled"`
+		AdminUsername              string   `json:"admin_username"`
+		AdminPassword              string   `json:"admin_password"`
+		BuildNativeNonstream       bool     `json:"build_native_nonstream"`
+		AntiTruncationSystemPrompt *bool    `json:"anti_truncation_system_prompt"`
+		AuthStates                 string   `json:"auth_states"`
+		ListenAddr                 string   `json:"listen_addr"`
+		ProxyAPIKey                string   `json:"proxy_api_key"`
+		Proxy                      string   `json:"proxy"`
+		InitTimeout                string   `json:"init_timeout"`
+		RequestTimeout             string   `json:"request_timeout"`
+		WarmWorkerLimit            int      `json:"warm_worker_limit"`
+		MaxActiveWorkers           int      `json:"max_active_workers"`
+		WarmStartupConcurrency     int      `json:"warm_startup_concurrency"`
+		PerAccountConcurrency      int      `json:"per_account_concurrency"`
+		RoutingStrategy            string   `json:"routing_strategy"`
+		UpstreamChannels           []string `json:"upstream_channels"`
+		ModelMapping               string   `json:"model_mapping"`
+		TemporaryChat              bool     `json:"temporary_chat"`
+		WAABackend                 string   `json:"waa_backend"`
 	}
 	var value payload
 	if err := json.Unmarshal(data, &value); err != nil {
@@ -491,29 +504,33 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	parsed := Config{
-		AutoStart:              value.AutoStart,
-		RequestBodyLog:         value.RequestBodyLog,
-		LogFile:                value.LogFile,
-		LogMaxTotalMB:          value.LogMaxTotalMB,
-		AdminAuthEnabled:       value.AdminAuthEnabled,
-		AdminUsername:          strings.TrimSpace(value.AdminUsername),
-		AdminPassword:          value.AdminPassword,
-		BuildNativeNonstream:   value.BuildNativeNonstream,
-		AuthStates:             strings.TrimSpace(value.AuthStates),
-		ListenAddr:             strings.TrimSpace(value.ListenAddr),
-		ProxyAPIKey:            strings.TrimSpace(value.ProxyAPIKey),
-		Proxy:                  strings.TrimSpace(value.Proxy),
-		InitTimeout:            initTimeout,
-		RequestTimeout:         requestTimeout,
-		WarmWorkerLimit:        value.WarmWorkerLimit,
-		MaxActiveWorkers:       value.MaxActiveWorkers,
-		WarmStartupConcurrency: value.WarmStartupConcurrency,
-		PerAccountConcurrency:  value.PerAccountConcurrency,
-		RoutingStrategy:        value.RoutingStrategy,
-		UpstreamChannels:       value.UpstreamChannels,
-		ModelMapping:           strings.TrimSpace(value.ModelMapping),
-		TemporaryChat:          value.TemporaryChat,
-		WAABackend:             strings.ToLower(strings.TrimSpace(value.WAABackend)),
+		AutoStart:                  value.AutoStart,
+		RequestBodyLog:             value.RequestBodyLog,
+		LogFile:                    value.LogFile,
+		LogMaxTotalMB:              value.LogMaxTotalMB,
+		AdminAuthEnabled:           value.AdminAuthEnabled,
+		AdminUsername:              strings.TrimSpace(value.AdminUsername),
+		AdminPassword:              value.AdminPassword,
+		BuildNativeNonstream:       value.BuildNativeNonstream,
+		AntiTruncationSystemPrompt: true,
+		AuthStates:                 strings.TrimSpace(value.AuthStates),
+		ListenAddr:                 strings.TrimSpace(value.ListenAddr),
+		ProxyAPIKey:                strings.TrimSpace(value.ProxyAPIKey),
+		Proxy:                      strings.TrimSpace(value.Proxy),
+		InitTimeout:                initTimeout,
+		RequestTimeout:             requestTimeout,
+		WarmWorkerLimit:            value.WarmWorkerLimit,
+		MaxActiveWorkers:           value.MaxActiveWorkers,
+		WarmStartupConcurrency:     value.WarmStartupConcurrency,
+		PerAccountConcurrency:      value.PerAccountConcurrency,
+		RoutingStrategy:            value.RoutingStrategy,
+		UpstreamChannels:           value.UpstreamChannels,
+		ModelMapping:               strings.TrimSpace(value.ModelMapping),
+		TemporaryChat:              value.TemporaryChat,
+		WAABackend:                 strings.ToLower(strings.TrimSpace(value.WAABackend)),
+	}
+	if value.AntiTruncationSystemPrompt != nil {
+		parsed.AntiTruncationSystemPrompt = *value.AntiTruncationSystemPrompt
 	}
 	if err := parsed.Validate(); err != nil {
 		return err

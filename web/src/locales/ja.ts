@@ -13,6 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': 'コンソールのパスワード',
   'settings.keepPassword': '空欄のままにすると現在のパスワードを維持します',
   'settings.buildNative': 'ストリーミング以外のリクエストで Build を優先する',
+  'settings.antiTruncationSystemPrompt': "途切れ防止のシステム指示を追加",
+  'settings.antiTruncationSystemPromptHelp':
+    "ツールによる途切れ防止のバリアントにのみ固定の system 指示を追加します。無効にしてもツール定義、必須ツール選択、本文の復元は維持され、元の system や履歴の指示は削除されません。既定は有効です。",
   'app.title': 'AI Studio コンソール',
   'app.console': 'コンソール',
   'app.gateway': 'プロトコル ゲートウェイ',

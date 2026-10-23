@@ -28,6 +28,10 @@ Authentication, proxy, worker/WAA and account concurrency remain shared. Channel
 
 A stable internal function carries the complete final text in `content`. The core validates the full argument object and projects it into ordinary text before protocol adaptation. Real client tools retain their IDs, arguments and signatures. A required real tool cannot be satisfied by this internal transport.
 
+The tool declaration itself requires every user-facing reply (answers, clarification questions, confirmations, refusals and progress updates) to use this function. “Final” means the reply for the current interaction, not completion of the whole task. The full `content` is displayed verbatim; there is no delete/replace/retract/revise operation. Use one call for the reply, at most once per model response. Pure real-tool responses need not add a reply, and this function cannot satisfy a required real-tool call. These rules remain in the schema even when the optional system-instruction append is disabled.
+
+The parameter description excludes drafts, alternate versions and self-editing instructions from the submitted reply. This is a model-facing instruction, not semantic validation of the string: a valid `content` containing such words is still projected verbatim. Ordinary-text fallback and required/ANY selection are unchanged; the new wording does not prove transport was used or that output quality has improved.
+
 - Ordinary text is bounded and buffered until the source is selected; valid transport text takes precedence, preventing duplicate answers.
 - Broken, repeated or conflicting transport calls fail. There is no JSON repair or automatic model call to complete them.
 - Stop sequences apply to projected text. Length, safety, upstream errors, cancellation and missing terminal events are not rewritten as success.
@@ -35,6 +39,14 @@ A stable internal function carries the complete final text in `content`. The cor
 - Native Argon continuation remains independent. There is no new cross-round repair of incomplete function arguments.
 - **This is not incremental function-argument streaming.** SSE remains available, but transported text can arrive only when the complete arguments are available. No fake timed chunking is added.
 - Transport success alone does not prove that premature termination is less frequent. That needs a separately budgeted real comparison.
+
+## Optional system-instruction append
+
+`ANTI_TRUNCATION_SYSTEM_PROMPT=true` is the default, including existing configurations without this key. The Settings → Upstream switch controls **only** the fixed extra system instruction added for `playground/anti-truncation/…` and `build/anti-truncation/…`. Set it to `false` to preserve the caller's system text without this additional instruction. Save the setting and restart the generation service to apply it; in-flight requests keep the active client's setting.
+
+Disabling this switch does **not** disable anti-truncation, remove the transport function/schema, change `required/ANY` or real-tool selection, disable native continuation, or change text projection/fallback. It does not erase instructions already in caller input or history. Plain variants and Assistant are unaffected. No public per-request override is added. Old management clients that omit this field preserve its saved value.
+
+This switch is an experiment control, not proof that the prompt caused repetition or that disabling it fixes output quality. The additional system-instruction wording is unchanged; the tool and `content` descriptions independently define the reply-submission rules above.
 
 ## History and Responses
 

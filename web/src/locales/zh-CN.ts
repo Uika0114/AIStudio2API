@@ -11,6 +11,9 @@ export const messages = {
   'settings.adminPassword': '管理密码',
   'settings.keepPassword': '留空保留现有密码',
   'settings.buildNative': '非流式请求优先使用 Build',
+  'settings.antiTruncationSystemPrompt': "抗截断追加系统提示",
+  'settings.antiTruncationSystemPromptHelp':
+    "仅对工具抗截断变体追加固定 system 提示。关闭后仍保留工具定义、强制工具选择和正文解包；不会删除原始 system 或历史中的指令。默认开启。",
   'app.title': 'AI Studio 控制台',
   'app.console': '控制台',
   'app.gateway': '协议网关',

@@ -35,6 +35,7 @@ const form = reactive<ServiceConfig>({
   admin_username: 'admin',
   admin_password_set: false,
   build_native_nonstream: true,
+  anti_truncation_system_prompt: true,
   auth_states: 'auth',
   listen_addr: '127.0.0.1:2048',
   proxy_api_key: '',
@@ -97,6 +98,7 @@ const sections: {
       'upstream_channels',
       'model_mapping',
       'build_native_nonstream',
+      'anti_truncation_system_prompt',
       'waa_backend',
       'temporary_chat',
       'init_timeout',
@@ -491,6 +493,18 @@ async function saveConfig(): Promise<void> {
               :changed="changedFields.has('build_native_nonstream')"
             >
               <UiSwitch id="setting-build-native" v-model="form.build_native_nonstream" />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.antiTruncationSystemPrompt')"
+              control-id="setting-anti-truncation-system-prompt"
+              :description="t('settings.antiTruncationSystemPromptHelp')"
+              effect="service"
+              :changed="changedFields.has('anti_truncation_system_prompt')"
+            >
+              <UiSwitch
+                id="setting-anti-truncation-system-prompt"
+                v-model="form.anti_truncation_system_prompt"
+              />
             </SettingRow>
             <SettingRow
               :label="t('settings.waaBackend')"
