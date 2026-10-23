@@ -51,6 +51,7 @@ var configKeys = [...]string{
 	"ADMIN_PASSWORD",
 	"BUILD_NATIVE_NONSTREAM",
 	"ANTI_TRUNCATION_SYSTEM_PROMPT",
+	"REMOTE_AUTH_CONFIG",
 }
 
 // LogFileMB 是单个日志文件的轮转大小
@@ -76,6 +77,7 @@ type Config struct {
 	AdminPassword              string        `json:"-"`
 	BuildNativeNonstream       bool          `json:"build_native_nonstream"`
 	AntiTruncationSystemPrompt bool          `json:"anti_truncation_system_prompt"`
+	RemoteAuthConfig           string        `json:"-"`
 	AuthStates                 string        `json:"auth_states"`
 	ListenAddr                 string        `json:"listen_addr"`
 	ProxyAPIKey                string        `json:"proxy_api_key"`
@@ -242,6 +244,7 @@ func Load(path string) (Config, error) {
 	if value, ok := values["WAA_BACKEND"]; ok {
 		cfg.WAABackend = strings.ToLower(strings.TrimSpace(value))
 	}
+	cfg.RemoteAuthConfig = strings.TrimSpace(values["REMOTE_AUTH_CONFIG"])
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -263,6 +266,7 @@ func (c Config) Save(path string) error {
 		"ADMIN_PASSWORD":                c.AdminPassword,
 		"BUILD_NATIVE_NONSTREAM":        strconv.FormatBool(c.BuildNativeNonstream),
 		"ANTI_TRUNCATION_SYSTEM_PROMPT": strconv.FormatBool(c.AntiTruncationSystemPrompt),
+		"REMOTE_AUTH_CONFIG":            c.RemoteAuthConfig,
 		"AISTUDIO_AUTH_STATES":          c.AuthStates,
 		"LISTEN_ADDR":                   c.ListenAddr,
 		"PROXY_API_KEY":                 c.ProxyAPIKey,
@@ -292,6 +296,9 @@ func (c Config) Save(path string) error {
 
 // Validate 校验配置值是否能用于服务启动
 func (c Config) Validate() error {
+	if c.RemoteAuthConfig != "" && (!filepath.IsAbs(c.RemoteAuthConfig) || strings.ContainsAny(c.RemoteAuthConfig, "\r\n")) {
+		return fmt.Errorf("REMOTE_AUTH_CONFIG 必须为绝对路径")
+	}
 	if c.AdminAuthEnabled && (strings.TrimSpace(c.AdminUsername) == "" || strings.TrimSpace(c.AdminPassword) == "") {
 		return fmt.Errorf("开启管理登录需要 ADMIN_USERNAME 与 ADMIN_PASSWORD")
 	}

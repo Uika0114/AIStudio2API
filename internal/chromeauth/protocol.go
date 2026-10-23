@@ -170,10 +170,16 @@ func requestMultilogin(ctx context.Context, client tls_client.HttpClient, gaiaID
 	request.Header.Set("Authorization", "MultiOAuth "+authorization)
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("User-Agent", userAgent)
+	phase := "assertion"
+	if assertion == assertionSentinel {
+		phase = "challenge"
+	}
+	observeHTTP(ctx, phase, true, 0)
 	response, err := client.Do(request)
 	if err != nil {
 		return 0, multiloginResponse{}, fmt.Errorf("OAuthMultilogin 请求失败: %w", err)
 	}
+	observeHTTP(ctx, phase, false, response.StatusCode)
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 	if err != nil {

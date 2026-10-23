@@ -41,6 +41,9 @@ func checkProxy(ctx context.Context, proxy string) error {
 
 // proxyNetworkError 判断请求失败是否为经代理的网络错误
 func proxyNetworkError(ctx context.Context, err error) bool {
+	if aistudio.IsSessionFailure(err) {
+		return false
+	}
 	if err == nil || ctx.Err() != nil {
 		return false
 	}

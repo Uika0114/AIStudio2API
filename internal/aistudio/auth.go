@@ -139,15 +139,9 @@ func LoadStorageState(filePath string) (StorageState, error) {
 
 // WriteStorageState 原子写回 Playwright storage state
 func WriteStorageState(filePath string, state StorageState) error {
-	if err := state.Validate(); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("编码 storage state: %w", err)
-	}
-	data = append(data, '\n')
-	return atomicWriteFile(filePath, data, 0o600)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return writeSessionState(ctx, filePath, &state, false)
 }
 
 // Validate 校验 storage state 的浏览器字段

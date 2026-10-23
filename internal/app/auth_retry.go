@@ -26,6 +26,8 @@ type authRuntimeRefresher struct {
 	prepareHeaders func(string) (func(bool), error)
 	globalProxy    string
 	requests       *requestRegistry
+	remote         remoteSessionProvider
+	closeRemote    func()
 }
 
 // authRetryTransport 为普通 RPC 执行一次认证续签重试
@@ -175,6 +177,9 @@ func importCurrentChromeState(ctx context.Context, source aistudio.AuthSource, m
 
 // markAuthenticationRequired 发布当前认证代际的账户状态
 func (refresher *authRuntimeRefresher) markAuthenticationRequired(ctx context.Context, cause error) error {
+	if aistudio.IsSessionFailure(cause) {
+		return cause
+	}
 	lease, ok := aistudio.AccountLeaseFromContext(ctx)
 	if !ok || ctx.Err() != nil || !aistudio.DefinitiveAuthenticationFailure(cause) {
 		return cause
@@ -193,6 +198,10 @@ func (refresher *authRuntimeRefresher) markAuthenticationRequired(ctx context.Co
 
 // Recover 为当前认证代际恢复一次登录并保留最终失败原因
 func (refresher *authRuntimeRefresher) Recover(ctx context.Context, cause error) error {
+	if aistudio.IsSessionFailure(cause) {
+		return cause
+	}
+	ctx = aistudio.WithRemoteAuthBudget(ctx)
 	var startup *accountWorkerInitError
 	if errors.As(cause, &startup) && startup.authHandled {
 		return cause
@@ -201,6 +210,9 @@ func (refresher *authRuntimeRefresher) Recover(ctx context.Context, cause error)
 		if err := refresher.Refresh(ctx); err == nil {
 			return nil
 		} else {
+			if aistudio.IsSessionFailure(err) || isRemoteLease(ctx) {
+				return safeRemoteRecoveryFailure(err)
+			}
 			cause = errors.Join(cause, err)
 		}
 	}
@@ -209,6 +221,7 @@ func (refresher *authRuntimeRefresher) Recover(ctx context.Context, cause error)
 
 // do 重放认证恢复前尚未产生语义输出的普通或受保护 RPC
 func (refresher *authRuntimeRefresher) do(ctx context.Context, method string, send func() (*aistudio.RPCResponse, error)) (*aistudio.RPCResponse, error) {
+	ctx = aistudio.WithRemoteAuthBudget(ctx)
 	for attempt := 0; ; attempt++ {
 		response, err := send()
 		if err == nil && authenticationFailed(response) {
@@ -324,6 +337,9 @@ func (transport *authRetryProtectedTransport) DoProtectedVideo(
 
 // Refresh 续签当前租约账户并保存新的 storage state
 func (refresher *authRuntimeRefresher) Refresh(ctx context.Context) error {
+	if handled, err := refresher.tryRemoteRefresh(ctx); handled {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -443,6 +459,9 @@ func (refresher *authRuntimeRefresher) Available(ctx context.Context) bool {
 	state, err := lease.ReloadStorageState()
 	if err != nil {
 		return false
+	}
+	if meta, sessionErr := state.Session(); sessionErr != nil || meta != nil && meta.Remote != nil {
+		return true
 	}
 	extension, exists, err := state.AuthExtension()
 	if err != nil || !exists {

@@ -496,6 +496,9 @@ func (s *PooledService) cachedModels(accountID string) []Model {
 
 // DefinitiveAuthenticationFailure 判断上游是否明确要求重新认证
 func DefinitiveAuthenticationFailure(err error) bool {
+	if IsSessionFailure(err) {
+		return false
+	}
 	if errors.Is(err, camoufoxnative.ErrAuthenticationRequired) {
 		return true
 	}
@@ -675,6 +678,7 @@ func (s *PooledService) ValidateGenerateRequest(request GenerateRequest) error {
 
 // Generate 使用支持目标模型的独占账户生成事件流
 func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (<-chan Event, error) {
+	ctx = WithRemoteAuthBudget(ctx)
 	var err error
 	request, err = NormalizeGenerateRequestModel(request)
 	if err != nil {
@@ -773,6 +777,9 @@ func accountAttemptLimit(pool *AccountPool, pinned bool) int {
 }
 
 func retryableAccountError(err error) bool {
+	if IsSessionFailure(err) {
+		return false
+	}
 	if driveAuthorizationMissing(err) {
 		return false
 	}

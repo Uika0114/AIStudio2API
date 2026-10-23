@@ -411,6 +411,24 @@ func (s *AccountStore) Load() ([]*Account, error) {
 
 // Create 创建并锁定以认证邮箱命名的账户目录
 func (s *AccountStore) Create(accountConfig AccountConfig, state StorageState) (*Account, *AccountPublishLease, error) {
+	return s.createAccount(accountConfig, state, false)
+}
+
+// CreateRemoteProjection creates only a disabled cookie consumer, never a generator.
+func (s *AccountStore) CreateRemoteProjection(accountConfig AccountConfig, state StorageState) (*Account, *AccountPublishLease, error) {
+	meta, err := state.Session()
+	if err != nil || meta == nil || meta.Remote == nil || meta.Revision != 0 {
+		return nil, nil, SessionError("INVALID_SESSION_STATE")
+	}
+	meta.Remote.EnrollmentRequired = true
+	if err := state.SetSession(meta); err != nil {
+		return nil, nil, err
+	}
+	accountConfig.Enabled = false
+	return s.createAccount(accountConfig, state, true)
+}
+
+func (s *AccountStore) createAccount(accountConfig AccountConfig, state StorageState, managed bool) (*Account, *AccountPublishLease, error) {
 	if s == nil || len(s.paths) != 1 {
 		return nil, nil, fmt.Errorf("创建账户需要一个账户根目录")
 	}
@@ -440,8 +458,14 @@ func (s *AccountStore) Create(accountConfig AccountConfig, state StorageState) (
 	if err := writeAccountConfig(filepath.Join(temporary, accountConfigName), accountConfig); err != nil {
 		return nil, nil, err
 	}
-	if err := WriteStorageState(filepath.Join(temporary, storageStateName), state); err != nil {
-		return nil, nil, err
+	var writeErr error
+	if managed {
+		writeErr = WriteManagedSessionState(context.Background(), filepath.Join(temporary, storageStateName), &state)
+	} else {
+		writeErr = WriteStorageState(filepath.Join(temporary, storageStateName), state)
+	}
+	if writeErr != nil {
+		return nil, nil, writeErr
 	}
 	directory := filepath.Join(root, id)
 	account, err := loadAccount(temporary)
@@ -1503,10 +1527,16 @@ func (l *AccountLease) WaitForAuthRefresh(ctx context.Context) error {
 }
 
 // RefreshStorageState 保证并发认证失效只提交一次
-func (l *AccountLease) RefreshStorageState(
-	update func(*StorageState) error,
-	prepareCommit func() (func(bool), error),
-) error {
+func (l *AccountLease) RefreshStorageState(update func(*StorageState) error, prepareCommit func() (func(bool), error)) error {
+	return l.refreshStorageState(context.Background(), update, prepareCommit, false)
+}
+
+// RefreshManagedStorageState retains the existing lease while committing a remote session.
+func (l *AccountLease) RefreshManagedStorageState(ctx context.Context, update func(*StorageState) error, prepareCommit func() (func(bool), error)) error {
+	return l.refreshStorageState(ctx, update, prepareCommit, true)
+}
+
+func (l *AccountLease) refreshStorageState(ctx context.Context, update func(*StorageState) error, prepareCommit func() (func(bool), error), managed bool) error {
 	if l == nil || l.account == nil || l.pool == nil || update == nil || prepareCommit == nil {
 		return fmt.Errorf("账户租约未初始化")
 	}
@@ -1531,13 +1561,24 @@ func (l *AccountLease) RefreshStorageState(
 	if err := update(&state); err != nil {
 		return err
 	}
+	if managed {
+		if err := CheckSessionRevision(l.account.StoragePath, state); err != nil {
+			return err
+		}
+	}
 	finishCommit, err := prepareCommit()
 	if err != nil {
 		return err
 	}
-	if err := WriteStorageState(l.account.StoragePath, state); err != nil {
+	var writeErr error
+	if managed {
+		writeErr = WriteManagedSessionState(ctx, l.account.StoragePath, &state)
+	} else {
+		writeErr = WriteStorageState(l.account.StoragePath, state)
+	}
+	if writeErr != nil {
 		finishCommit(false)
-		return err
+		return writeErr
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
@@ -2536,6 +2577,9 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 		refreshRuntime := false
 		if account.active == 0 {
 			leaseLock, leasePath, err := acquireAccountFileLease(account.StoragePath)
+			if IsSessionFailureCode(err, "REMOTE_OWNED") {
+				continue
+			}
 			if errors.Is(err, errAccountLeaseBusy) {
 				pollAt := now.Add(externalLeasePoll)
 				if earliest.IsZero() || pollAt.Before(earliest) {
@@ -2863,6 +2907,16 @@ func loadAccount(directory string) (*Account, error) {
 func initialAccountState(accountConfig AccountConfig, state StorageState) AccountState {
 	if !accountConfig.Enabled {
 		return AccountDisabled
+	}
+	if meta, err := state.Session(); err != nil {
+		return AccountUnavailable
+	} else if meta != nil {
+		if meta.Authority != nil {
+			return AccountUnavailable
+		}
+		if meta.Remote.EnrollmentRequired {
+			return AccountAuthRequired
+		}
 	}
 	now := time.Now()
 	for _, item := range signatureCookies {
@@ -3341,6 +3395,10 @@ func selectionAccessScope(selection AccountSelection) string {
 }
 
 func acquireAccountFileLease(storagePath string) (*flock.Flock, string, error) {
+	return acquireAccountFileLeaseFor(storagePath, false)
+}
+
+func acquireAccountFileLeaseFor(storagePath string, authority bool) (*flock.Flock, string, error) {
 	if storagePath == "" {
 		return nil, "", nil
 	}
@@ -3357,6 +3415,13 @@ func acquireAccountFileLease(storagePath string) (*flock.Flock, string, error) {
 	}
 	if !locked {
 		return nil, leasePath, errAccountLeaseBusy
+	}
+	if !authority {
+		checkErr := sessionAcquisitionFence(storagePath)
+		if checkErr != nil && !errors.Is(checkErr, os.ErrNotExist) {
+			_ = leaseLock.Unlock()
+			return nil, leasePath, checkErr
+		}
 	}
 	return leaseLock, leasePath, nil
 }

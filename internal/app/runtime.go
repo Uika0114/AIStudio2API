@@ -108,6 +108,17 @@ func newRuntime(
 		return nil, nil, nil, errors.Join(err, workers.Close())
 	}
 	refresher := newAuthRuntimeRefresher(workers, headers, requests, globalProxy)
+	if err := refresher.configureRemote(cfg.RemoteAuthConfig); err != nil {
+		transport.CloseIdleConnections()
+		headers.Close()
+		return nil, nil, nil, errors.Join(err, workers.Close())
+	}
+	keepRemote := false
+	defer func() {
+		if !keepRemote && refresher.closeRemote != nil {
+			refresher.closeRemote()
+		}
+	}()
 	workers.refresher = refresher
 	client, err := aistudio.NewClient(aistudio.ClientOptions{
 		Transport:                         &authRetryTransport{transport: transport, refresher: refresher},
@@ -144,11 +155,15 @@ func newRuntime(
 	))
 	closeRuntime := func() error {
 		stopProbe()
+		if refresher.closeRemote != nil {
+			refresher.closeRemote()
+		}
 		err := workers.Close()
 		transport.CloseIdleConnections()
 		headers.Close()
 		return err
 	}
+	keepRemote = true
 	return service, admin, closeRuntime, nil
 }
 
@@ -3607,7 +3622,15 @@ func (service *trackedService) generateWithRetry(
 		waaRuntimeFailed := aistudio.DefinitiveWAARuntimeFailure(err)
 		workerReplaced := errors.Is(err, errAccountWorkerReplaced)
 		localWorkerFailure := (workerFailed || workerReplaced) && requestCtx.Err() == nil
-		retryable := (retryableGenerateAccountError(requestCtx, err) || localWorkerFailure) && !semanticStarted.Load()
+		retryable := generationAttemptRetryable(requestCtx, err, localWorkerFailure, semanticStarted.Load())
+		// Remote authentication failures outrank WorkerFailed and every fallback.
+		if aistudio.IsSessionFailure(err) {
+			if releaseErr := lease.Release(); releaseErr != nil {
+				err = errors.Join(err, releaseErr)
+			}
+			lease = nil
+			break
+		}
 		recoverWorker := false
 		if aistudio.DefinitiveAuthenticationFailure(err) {
 			if stateErr := lease.MarkAuthenticationRequired(err.Error()); stateErr != nil {
@@ -3786,6 +3809,9 @@ func firstGenerateEvent(ctx context.Context, source <-chan aistudio.Event, onWai
 }
 
 func retryableGenerateAccountError(ctx context.Context, err error) bool {
+	if aistudio.IsSessionFailure(err) {
+		return false
+	}
 	if errors.Is(err, errStreamClosedBeforeFirstEvent) || errors.Is(err, aistudio.ErrAccountCoolingDown) {
 		return true
 	}
@@ -3809,6 +3835,7 @@ func retryableGenerateAccountError(ctx context.Context, err error) bool {
 }
 
 func (service *trackedService) lifecycleRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx = aistudio.WithRemoteAuthBudget(ctx)
 	requestCtx, cancel := context.WithTimeout(ctx, service.timeout)
 	stopLifecycle := context.AfterFunc(service.lifecycle, cancel)
 	return requestCtx, func() {
@@ -3823,6 +3850,7 @@ func (service *trackedService) dataRequestContext(ctx context.Context) (context.
 
 // dataRequestContextFor 返回绑定数据面生命周期、期限为 timeout 的请求上下文
 func (service *trackedService) dataRequestContextFor(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc, error) {
+	ctx = aistudio.WithRemoteAuthBudget(ctx)
 	service.lifecycleMu.Lock()
 	if service.state.Load() != serviceRunning || service.dataContext == nil {
 		service.lifecycleMu.Unlock()

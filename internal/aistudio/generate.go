@@ -664,6 +664,7 @@ func validateGenerateEntry(request GenerateRequest, entry modelEntry) error {
 }
 
 func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan Event, error) {
+	ctx = WithRemoteAuthBudget(ctx)
 	var err error
 	request, err = NormalizeGenerateRequestModel(request)
 	if err != nil {

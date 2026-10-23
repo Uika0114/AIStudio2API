@@ -415,6 +415,11 @@ func (admin *runtimeAdmin) LoginAccount(ctx context.Context, accountID string) (
 		return api.AdminAccount{}, accountOperationError(err)
 	}
 	account := lease.Account()
+	if state, readErr := lease.ReloadStorageState(); readErr != nil {
+		return api.AdminAccount{}, errors.Join(readErr, lease.Release())
+	} else if session, sessionErr := state.Session(); sessionErr != nil || session != nil {
+		return api.AdminAccount{}, errors.Join(aistudio.SessionError("REMOTE_OWNED"), lease.Release())
+	}
 	if err := admin.workers.Reset(account.ID); err != nil {
 		return api.AdminAccount{}, errors.Join(err, lease.Release())
 	}
@@ -743,6 +748,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		AdminAuthEnabled: value.AdminAuthEnabled, AdminUsername: strings.TrimSpace(value.AdminUsername), AdminPassword: password,
 		BuildNativeNonstream:       value.BuildNativeNonstream,
 		AntiTruncationSystemPrompt: saved.AntiTruncationSystemPrompt,
+		RemoteAuthConfig:           saved.RemoteAuthConfig,
 		AuthStates:                 value.AuthStates, ListenAddr: value.ListenAddr, ProxyAPIKey: value.APIKey,
 		Proxy: value.Proxy, InitTimeout: initTimeout, RequestTimeout: requestTimeout,
 		WarmWorkerLimit: value.WarmWorkerLimit, MaxActiveWorkers: value.MaxActiveWorkers,

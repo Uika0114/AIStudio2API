@@ -253,6 +253,9 @@ func (admin *runtimeAdmin) rebindChromeSource(ctx context.Context, accountID str
 	account := lease.Account()
 	err = lease.RefreshStorageState(func(state *aistudio.StorageState) error {
 		if err := ctx.Err(); err != nil {
+			if session, sessionErr := state.Session(); sessionErr != nil || session != nil {
+				return aistudio.SessionError("REMOTE_OWNED")
+			}
 			return err
 		}
 		old, exists, err := state.AuthExtension()
