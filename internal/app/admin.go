@@ -849,8 +849,8 @@ func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, erro
 			if key == "*" || !cooldown.Active(now) {
 				continue
 			}
-			modelID, build := strings.CutPrefix(key, string(aistudio.ChannelBuild)+":")
-			if _, ok := models[modelID]; !ok && !build {
+			_, modelID, scoped := aistudio.ParseChannelCooldownScope(key)
+			if _, ok := models[modelID]; !ok && !scoped {
 				continue
 			}
 			if current, ok := effective[key]; !ok || cooldown.Until.After(current.Until) {
@@ -864,13 +864,9 @@ func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, erro
 		sort.Strings(modelIDs)
 		for _, key := range modelIDs {
 			cooldown := effective[key]
-			channel := string(aistudio.ChannelPlayground)
-			modelID, build := strings.CutPrefix(key, string(aistudio.ChannelBuild)+":")
-			if build {
-				channel = string(aistudio.ChannelBuild)
-			}
+			channel, modelID, _ := aistudio.ParseChannelCooldownScope(key)
 			cooldowns = append(cooldowns, api.AdminCooldown{
-				AccountID: account.ID, AccountLabel: account.Label, Channel: channel,
+				AccountID: account.ID, AccountLabel: account.Label, Channel: string(channel),
 				ModelID: modelID, Until: cooldown.Until, Reason: cooldown.Reason,
 			})
 		}

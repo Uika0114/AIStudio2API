@@ -123,6 +123,10 @@ func (t *WorkerProtectedTransport) DoProtected(ctx context.Context, request Gene
 		prompt, err = buildBindingPrompt(rpc.Body)
 		page = contentsText(request.Contents)
 		proofField = buildProofField
+	} else if rpc.Method == assistantInitMethod {
+		prompt, err = assistantBindingPrompt(rpc.Body)
+		page = contentsText(request.Contents)
+		proofField = assistantProofField
 	} else {
 		prompt, err = bindingPrompt(request)
 		page = prompt
@@ -163,6 +167,12 @@ func (t *WorkerProtectedTransport) doBrowserPrepared(
 		return nil, ErrAccountCoolingDown
 	}
 	reportRequestPhase(ctx, RequestPhaseSendingUpstream)
+	// Assistant submits a non-idempotent task. A send error without response
+	// headers may still mean it ran upstream; do not let the outer dispatcher
+	// resubmit merely because no text or acknowledgement arrived.
+	if rpc.Method == assistantInitMethod {
+		observeGenerationProgress(ctx)
+	}
 	markPhysicalSend(ctx)
 	response, err := worker.SendProtected(ctx, ProtectedRequest{
 		URL: rpc.URL, Headers: headers, Body: rpc.Body,
@@ -642,6 +652,15 @@ func (s *PooledService) ValidateGenerateRequest(request GenerateRequest) error {
 	if len(request.Contents) == 0 {
 		return fmt.Errorf("%w: 请求没有系统提示或对话内容", ErrInvalidArgument)
 	}
+	if request.Selection.Channel == ChannelAssistant {
+		request, err = prepareAssistantTextRequest(request)
+		if err != nil {
+			return err
+		}
+		if err := validateAssistantRequest(request); err != nil {
+			return err
+		}
+	}
 	request, _, err = prepareToolRequest(request)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
@@ -670,6 +689,15 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 	request.System, request.Contents = normalizeTurns(request.System, request.Contents)
 	if len(request.Contents) == 0 {
 		return nil, fmt.Errorf("%w: 请求没有系统提示或对话内容", ErrInvalidArgument)
+	}
+	if request.Selection.Channel == ChannelAssistant {
+		request, err = prepareAssistantTextRequest(request)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateAssistantRequest(request); err != nil {
+			return nil, err
+		}
 	}
 	resourceID, err := s.pool.ResourceIDForContents(ctx, request.Contents)
 	if err != nil {

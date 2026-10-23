@@ -678,8 +678,20 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		return nil, err
 	}
 	build := leased && actualChannel == ChannelBuild
+	assistant := leased && actualChannel == ChannelAssistant
+	if assistant {
+		request, err = prepareAssistantTextRequest(request)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateAssistantRequest(request); err != nil {
+			return nil, err
+		}
+	}
 	var entry modelEntry
-	if build {
+	if assistant {
+		entry, err = c.assistantModelEntry(ctx, request, lease)
+	} else if build {
 		entry, err = c.buildModelEntry(ctx, request, lease)
 	} else {
 		entry, err = c.modelEntry(ctx, request.AccountID, request.Model)
@@ -687,7 +699,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	if err != nil {
 		return nil, err
 	}
-	if build {
+	if build || assistant {
 		entry.defaults.ContinuedOutputTokens = 0
 	}
 	if err := validateStrictGenerateEntry(request, entry); err != nil {
@@ -697,17 +709,21 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		request.Model = entry.model.ID
 		request.Selection.BaseModel = entry.model.ID
 	}
-	request.Tools, err = supportedTools(request.Tools, entry.model)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
-	}
-	if !entry.model.Capabilities["function_declarations"] {
-		request.Contents, err = transcribeFunctionParts(request.Contents)
+	// Assistant has an explicit, text-only downgrade contract. Keep legacy
+	// capability filtering/transcription unchanged for the other routes.
+	if !assistant {
+		request.Tools, err = supportedTools(request.Tools, entry.model)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 		}
+		if !entry.model.Capabilities["function_declarations"] {
+			request.Contents, err = transcribeFunctionParts(request.Contents)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+			}
+		}
 	}
-	interaction := entry.defaults.InteractionStream && !build
+	interaction := entry.defaults.InteractionStream && !build && !assistant
 	if interaction {
 		if request.Selection.Strict() && (request.Selection.AntiTruncation || len(request.Tools.Functions) > 0 || len(request.Tools.Google) > 0 || request.Tools.GoogleSearch != nil) {
 			return nil, fmt.Errorf("%w: interaction-backed generation cannot preserve the requested tools", ErrInvalidArgument)
@@ -753,7 +769,9 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	wireRequest.Config.StopSequences = nil
 	var response *RPCResponse
 	var decodeStream func(io.Reader, func(Event) error) error
-	if build {
+	if assistant {
+		response, decodeStream, err = c.sendAssistant(ctx, wireRequest, entry)
+	} else if build {
 		response, decodeStream, err = c.sendBuild(ctx, wireRequest, entry)
 	} else {
 		response, decodeStream, err = c.sendPlayground(ctx, wireRequest, entry)

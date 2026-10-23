@@ -192,12 +192,13 @@ export const messages: Record<TranslationKey, string> = {
     'Camoufox führt WAA in einer Browserseite im Hintergrund aus. Reines Go führt WAA im Dienstprozess aus und lädt Camoufox weder herunter noch startet es. Die Kontoanmeldung erfordert immer einen Browser. Starten Sie den Generierungsdienst neu, um die Änderung zu übernehmen.',
   'settings.upstreamChannels': 'Upstream-Kanäle',
   'settings.upstreamChannelsHelp':
-    'Playground und Build sind zwei unabhängige Kontingente desselben Kontos. Sind beide aktiviert, werden Anfragen pro Kombination aus Konto und Kanal verteilt, und der andere Kanal übernimmt, wenn einer im Cooldown ist. Mindestens einer muss aktiviert sein.',
+    'Mindestens einen Kanal aktivieren. Explizite Modellpräfixe wechseln nie den Kanal. Assistant ist optional und erfordert assistant/; Auto ohne Präfix schließt ihn aus. Upstream-Kontingente können geteilt sein.',
   'settings.modelMapping': 'Modellzuordnung',
   'settings.modelMappingHelp':
     'Ordnet Modellnamen, die Clients verwenden, Modellen aus dem Katalog zu. Schreiben Sie jeden Eintrag als Alias:Modell-ID und trennen Sie Einträge durch Kommas, zum Beispiel claude-haiku-5-5:gemini-3.8-flash. Aliasse erscheinen in der Modellliste mit den Funktionen ihres Ziels. Starten Sie den Generierungsdienst neu, um die Änderung zu übernehmen.',
   'channel.playground': 'Playground',
   'channel.build': 'Build',
+  'channel.assistant': 'Assistant',
   'logs.channel': 'Kanal',
   'models.channels': 'Kanäle',
   'settings.temporaryChat': 'Temporären Chat zum Vorwärmen von WAA verwenden',

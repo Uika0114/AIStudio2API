@@ -190,12 +190,13 @@ export const messages: Record<TranslationKey, string> = {
     'Camoufox는 백그라운드 브라우저 페이지에서 WAA를 실행합니다. Pure Go는 서비스 프로세스 안에서 WAA를 실행하며 Camoufox를 내려받거나 시작하지 않습니다. 계정 로그인에는 항상 브라우저가 필요합니다. 변경 사항은 생성 서비스를 다시 시작하면 적용됩니다.',
   'settings.upstreamChannels': '업스트림 채널',
   'settings.upstreamChannelsHelp':
-    'Playground와 Build는 같은 계정의 서로 독립된 두 할당량입니다. 둘 다 사용하면 계정과 채널 조합 단위로 요청을 배분하고, 한 채널이 쿨다운에 들어가면 다른 채널이 이어서 처리합니다. 하나 이상을 사용해야 합니다.',
+    '명시적 모델 접두사는 다른 채널로 전환하지 않습니다. Assistant는 별도 활성화 후 assistant/로 선택하며 기본 auto에서 제외됩니다. 로컬 쿨다운은 분리되지만 상위 할당량은 공유될 수 있습니다.',
   'settings.modelMapping': '모델 매핑',
   'settings.modelMappingHelp':
     '클라이언트가 쓰는 모델 이름을 목록의 모델에 연결합니다. 각 항목은 별칭:모델 ID 형식으로 쓰고 여러 항목은 쉼표로 구분합니다(예: claude-haiku-5-5:gemini-3.8-flash). 별칭은 모델 목록에 표시되며 기능은 대상 모델과 같습니다. 생성 서비스를 다시 시작하면 적용됩니다.',
   'channel.playground': 'Playground',
   'channel.build': 'Build',
+  'channel.assistant': 'Assistant',
   'logs.channel': '채널',
   'models.channels': '채널',
   'settings.temporaryChat': 'WAA 예열에 임시 채팅 사용',

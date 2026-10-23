@@ -30,6 +30,9 @@ func generationRPCChannel(method string) Channel {
 	if method == buildProxyStreamedMethod || method == buildProxyUnaryMethod {
 		return ChannelBuild
 	}
+	if method == assistantInitMethod || method == assistantGenerateMethod {
+		return ChannelAssistant
+	}
 	return ChannelPlayground
 }
 

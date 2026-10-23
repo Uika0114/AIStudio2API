@@ -3333,8 +3333,12 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 	return events, nil
 }
 
-// generateTimeout 返回生成请求的期限，自动续写请求按续写轮数倍增
+// generateTimeout does not borrow Playground continuation multipliers for a
+// strict non-Playground route. Its native budget is validated separately.
 func (service *trackedService) generateTimeout(request aistudio.GenerateRequest) time.Duration {
+	if request.Selection.Strict() && request.Selection.Channel != aistudio.ChannelPlayground {
+		return service.timeout
+	}
 	return service.timeout * time.Duration(service.pool.OutputContinuationRounds(request.Model, request.Config.MaxOutputTokens))
 }
 

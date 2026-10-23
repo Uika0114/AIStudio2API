@@ -192,12 +192,13 @@ export const messages: Record<TranslationKey, string> = {
     'Camoufox はバックグラウンドのブラウザ ページで WAA を実行します。Pure Go はサービスのプロセス内で WAA を実行し、Camoufox のダウンロードや起動は行いません。アカウントのログインには常にブラウザが必要です。切り替えは生成サービスの再起動後に反映されます。',
   'settings.upstreamChannels': '上流チャネル',
   'settings.upstreamChannelsHelp':
-    'Playground と Build は同じアカウントの独立した 2 つの割り当て枠です。両方を有効にすると、アカウントとチャネルの組み合わせ単位で振り分け、一方がクールダウンに入るともう一方で処理を続けます。少なくとも 1 つを有効にしてください。',
+    '明示モデル接頭辞は他チャネルへ切り替えません。Assistant は個別に有効化し assistant/ で選択します。裸名の auto には入りません。ローカルのクールダウンは分離しますが、上流の枠が独立とは限りません。',
   'settings.modelMapping': 'モデルのマッピング',
   'settings.modelMappingHelp':
     'クライアントが使うモデル名を一覧内のモデルに対応付けます。各項目は 別名:モデル ID の形式で、複数の項目はカンマで区切ります（例: claude-haiku-5-5:gemini-3.8-flash）。別名はモデル一覧に表示され、機能は対応先のモデルと同じです。生成サービスの再起動後に反映されます。',
   'channel.playground': 'Playground',
   'channel.build': 'Build',
+  'channel.assistant': 'Assistant',
   'logs.channel': 'チャネル',
   'models.channels': 'チャネル',
   'settings.temporaryChat': 'WAA のウォームアップに一時チャットを使用',

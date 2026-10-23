@@ -25,7 +25,7 @@ func HasModelSelectionPrefix(modelID string) bool {
 		return false
 	}
 	switch strings.ToLower(head) {
-	case "playground", "build", "anti-truncation", "auto":
+	case "playground", "build", "assistant", "anti-truncation", "auto":
 		return true
 	}
 	return false
@@ -47,7 +47,7 @@ func ParseModelSelection(modelID string) (ModelSelection, error) {
 		return result, nil
 	}
 	switch head {
-	case string(ChannelPlayground), string(ChannelBuild):
+	case string(ChannelPlayground), string(ChannelBuild), string(ChannelAssistant):
 		result.Channel = Channel(head)
 		if strings.HasPrefix(tail, "anti-truncation/") {
 			result.AntiTruncation = true

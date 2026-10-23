@@ -192,12 +192,13 @@ export const messages: Record<TranslationKey, string> = {
     'Camoufox exécute WAA dans une page de navigateur en arrière-plan. Go pur exécute WAA dans le processus du service, sans télécharger ni démarrer Camoufox. La connexion des comptes nécessite toujours un navigateur. Redémarrez le service de génération pour appliquer le changement.',
   'settings.upstreamChannels': 'Canaux amont',
   'settings.upstreamChannelsHelp':
-    'Playground et Build sont deux quotas indépendants d’un même compte. Lorsque les deux sont activés, les requêtes sont réparties par couple compte–canal et l’autre canal prend le relais quand l’un est en refroidissement. Activez-en au moins un.',
+    'Activez au moins un canal. Un préfixe explicite interdit le basculement. Assistant doit être activé et sélectionné avec assistant/ ; il est exclu du mode auto. Les quotas amont peuvent rester partagés.',
   'settings.modelMapping': 'Correspondance des modèles',
   'settings.modelMappingHelp':
     'Associe les noms de modèles utilisés par les clients aux modèles du catalogue. Écrivez chaque entrée sous la forme alias:ID du modèle et séparez les entrées par des virgules, par exemple claude-haiku-5-5:gemini-3.8-flash. Les alias apparaissent dans la liste des modèles avec les capacités de leur cible. Redémarrez le service de génération pour appliquer le changement.',
   'channel.playground': 'Playground',
   'channel.build': 'Build',
+  'channel.assistant': 'Assistant',
   'logs.channel': 'Canal',
   'models.channels': 'Canaux',
   'settings.temporaryChat': 'Utiliser une discussion temporaire pour préchauffer WAA',

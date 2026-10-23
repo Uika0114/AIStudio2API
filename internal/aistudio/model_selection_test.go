@@ -16,6 +16,8 @@ func TestParseModelSelection(t *testing.T) {
 		{"models/build/gemini-3.8-flash", "gemini-3.8-flash", ChannelBuild, false},
 		{"playground/anti-truncation/alias-high", "alias-high", ChannelPlayground, true},
 		{"build/anti-truncation/alias", "alias", ChannelBuild, true},
+		{"assistant/gemini-4-argon", "gemini-4-argon", ChannelAssistant, false},
+		{"assistant/anti-truncation/gemini-4-argon", "gemini-4-argon", ChannelAssistant, true},
 		{"legacy/name", "legacy/name", "", false},
 	}
 	for _, test := range tests {

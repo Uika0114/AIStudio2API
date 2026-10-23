@@ -8,7 +8,7 @@ import (
 )
 
 // channelOrder 是公开目录中通道变体的固定顺序。
-var channelOrder = []aistudio.Channel{aistudio.ChannelPlayground, aistudio.ChannelBuild}
+var channelOrder = []aistudio.Channel{aistudio.ChannelPlayground, aistudio.ChannelBuild, aistudio.ChannelAssistant}
 
 // modelHasChannel 判断目录项是否把通道列为可调用的资格候选。
 // 空 Channels 表示没有已知可用通道，绝不据此编造变体。
@@ -70,7 +70,7 @@ func publicModelCatalog(models []aistudio.Model) []aistudio.Model {
 			}
 		}
 		for _, channel := range channelOrder {
-			if modelHasChannel(model, channel) && modelSupportsAntiTruncation(model) {
+			if modelHasChannel(model, channel) && modelSupportsAntiTruncation(publicChannelVariant(model, channel, false)) {
 				appendModel(publicChannelVariant(model, channel, true))
 			}
 		}
@@ -83,6 +83,9 @@ func publicModelCatalog(models []aistudio.Model) []aistudio.Model {
 // output_continuation 能力，避免目录把 PG 专属能力标到 Build 上。
 func publicChannelVariant(model aistudio.Model, channel aistudio.Channel, anti bool) aistudio.Model {
 	selection := aistudio.ModelSelection{BaseModel: model.ID, Channel: channel, AntiTruncation: anti}
+	if channel == aistudio.ChannelAssistant {
+		model = aistudio.AssistantModelVariant(model)
+	}
 	variant := model
 	variant.ID = selection.PublicModelID(model.ID)
 	if variant.BaseModel == "" {
@@ -125,7 +128,7 @@ func LookupPublicModel(models []aistudio.Model, id string) (aistudio.Model, bool
 		if !modelHasGenerateMethod(model) || !modelHasChannel(model, selection.Channel) {
 			return aistudio.Model{}, false
 		}
-		if selection.AntiTruncation && !modelSupportsAntiTruncation(model) {
+		if selection.AntiTruncation && !modelSupportsAntiTruncation(publicChannelVariant(model, selection.Channel, false)) {
 			return aistudio.Model{}, false
 		}
 		model = publicChannelVariant(model, selection.Channel, selection.AntiTruncation)

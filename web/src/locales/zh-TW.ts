@@ -190,12 +190,13 @@ export const messages: Record<TranslationKey, string> = {
     'Camoufox 在背景瀏覽器頁面中執行 WAA；純 Go 在服務程序內執行 WAA，不會下載或啟動 Camoufox。登入帳號一律需要瀏覽器。切換後需重新啟動生成服務才會生效。',
   'settings.upstreamChannels': '上游通道',
   'settings.upstreamChannelsHelp':
-    'Playground 與 Build 是同一帳號的兩份獨立額度。兩者都啟用時，會依帳號與通道的組合排程，其中一個通道冷卻時由另一個通道接手；至少需啟用一個。',
+    'Playground/Build 依通道排程；明確模型前綴禁止跨通道回退。Assistant 須另行啟用，只接受 assistant/ 前綴，不加入裸名 auto；局部冷卻分開，不保證上游額度完全獨立。',
   'settings.modelMapping': '模型對應',
   'settings.modelMappingHelp':
     '將用戶端使用的模型名稱對應到目錄中的模型，每項寫成 別名:模型 ID，多項以逗號分隔，例如 claude-haiku-5-5:gemini-3.8-flash。別名會出現在模型清單中，功能沿用目標模型。重新啟動生成服務後生效。',
   'channel.playground': 'Playground',
   'channel.build': 'Build',
+  'channel.assistant': 'Assistant',
   'logs.channel': '通道',
   'models.channels': '通道',
   'settings.temporaryChat': 'WAA 預熱使用臨時對話',

@@ -15,12 +15,12 @@ func GenerationAccountSelection(request GenerateRequest, resourceID string, cont
 		Channel: request.Selection.Channel, StrictChannel: request.Selection.Strict(),
 	}
 	selection.PlaygroundOnly = resourceID != "" || request.Config.SpeechConfig != nil && request.Config.SpeechConfig.Mode != ""
-	if continuationRounds > 1 && !(selection.StrictChannel && selection.Channel == ChannelBuild) {
+	if continuationRounds > 1 && !(selection.StrictChannel && selection.Channel != ChannelPlayground) {
 		selection.PlaygroundOnly = true
 	}
 	if selection.StrictChannel {
-		if selection.Channel == ChannelBuild && selection.PlaygroundOnly {
-			return selection, fmt.Errorf("%w: request requires Playground-only resources or speech mode, but Build was selected", ErrInvalidArgument)
+		if selection.Channel != ChannelPlayground && selection.PlaygroundOnly {
+			return selection, fmt.Errorf("%w: request requires Playground-only resources or speech mode, but %s was selected", ErrInvalidArgument, selection.Channel)
 		}
 		if selection.Channel == ChannelPlayground && RequestNeedsBuildSchema(request) {
 			return selection, fmt.Errorf("%w: request schema requires Build; Playground was explicitly selected", ErrInvalidArgument)

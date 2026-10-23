@@ -346,13 +346,24 @@ func validateLeaseSelection(lease *AccountLease, selection AccountSelection) err
 			return fmt.Errorf("资源 %s 绑定账户 %s", resourceID, owner)
 		}
 	}
-	if selection.StrictChannel && selection.Channel != ChannelPlayground && selection.Channel != ChannelBuild {
+	if selection.StrictChannel && selection.Channel != ChannelPlayground && selection.Channel != ChannelBuild && selection.Channel != ChannelAssistant {
 		return fmt.Errorf("%w: strict channel is invalid", ErrInvalidArgument)
 	}
 	if selection.Channel != "" && (selection.StrictChannel || generationChannelSelection(selection)) && lease.Channel() != selection.Channel {
 		return fmt.Errorf("context 租约账户 %s 的 %s 通道不满足请求要求的 %s 通道", account.ID, lease.Channel(), selection.Channel)
 	}
 	modelID := strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")
+	if lease.Channel() == ChannelAssistant {
+		// Auxiliary applet/read/cleanup RPCs reuse the same lease with no model
+		// selection. Generation, however, always needs an explicit assistant pin.
+		if generationChannelSelection(selection) && (!selection.StrictChannel || selection.Channel != ChannelAssistant) {
+			return fmt.Errorf("%w: assistant generation requires explicit strict selection", ErrInvalidArgument)
+		}
+		if modelID != "" && !lease.pool.channelSupportsLocked(account, ChannelAssistant, selection) {
+			return fmt.Errorf("%w: assistant lease does not support the requested model/method", ErrInvalidArgument)
+		}
+		return nil
+	}
 	if lease.Channel() == ChannelBuild {
 		if modelID != "" && !lease.pool.channelSupportsLocked(account, ChannelBuild, selection) {
 			return fmt.Errorf("context 租约账户 %s 的 Build 通道不支持模型 %s", account.ID, modelID)

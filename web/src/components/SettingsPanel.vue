@@ -131,7 +131,7 @@ const section = useQueryParam<SectionID>(
 )
 const current = computed(() => sections.find((item) => item.id === section.value) ?? sections[0]!)
 
-const upstreamChannelOptions: UpstreamChannel[] = ['playground', 'build']
+const upstreamChannelOptions: UpstreamChannel[] = ['playground', 'build', 'assistant']
 const inputClass =
   'w-full rounded-md border border-line bg-canvas px-3 py-2 text-sm text-white transition focus:border-blue-500 focus:outline-none'
 

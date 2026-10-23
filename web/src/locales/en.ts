@@ -191,12 +191,13 @@ export const messages: Record<TranslationKey, string> = {
     'Camoufox runs WAA in a background browser page. Pure Go runs WAA inside the service process and neither downloads nor starts Camoufox. Account login always needs a browser. Restart the generation service to apply a change.',
   'settings.upstreamChannels': 'Upstream channels',
   'settings.upstreamChannelsHelp':
-    'Playground and Build are two independent quotas of the same account. With both enabled, requests are scheduled per account and channel, and the other channel continues when one cools down. Enable at least one.',
+    'Enable at least one channel. Explicit model prefixes never cross channels. Assistant is opt-in and requires assistant/; bare-model auto excludes it. Local cooldowns are separate, but upstream quotas may be shared.',
   'settings.modelMapping': 'Model mapping',
   'settings.modelMappingHelp':
     'Maps model names used by clients to catalog models. Write each item as alias:model ID and separate items with commas, for example claude-haiku-5-5:gemini-3.8-flash. Aliases appear in the model list with the capabilities of their target. Restart the generation service to apply a change.',
   'channel.playground': 'Playground',
   'channel.build': 'Build',
+  'channel.assistant': 'Assistant',
   'logs.channel': 'Channel',
   'models.channels': 'Channels',
   'settings.temporaryChat': 'Use temporary chat for WAA prewarming',

@@ -139,7 +139,7 @@ export interface Model {
   channels?: UpstreamChannel[]
 }
 
-export type UpstreamChannel = 'playground' | 'build'
+export type UpstreamChannel = 'playground' | 'build' | 'assistant'
 
 export interface Cooldown {
   account_id: string

@@ -15,13 +15,15 @@ const (
 	ChannelPlayground Channel = "playground"
 	// ChannelBuild 表示官网 Build 应用代理的 Gemini API 调用
 	ChannelBuild Channel = "build"
+	// ChannelAssistant is the Build code-assistant path, never an auto fallback.
+	ChannelAssistant Channel = "assistant"
 )
 
 // ChannelCooldownScope 返回通道在作用域上的冷却键，Build 使用 build:<作用域>
 func ChannelCooldownScope(channel Channel, scope string) string {
 	scope = strings.TrimSpace(scope)
-	if channel == ChannelBuild && scope != "" {
-		return ModelAccessKey(string(ChannelBuild), scope)
+	if (channel == ChannelBuild || channel == ChannelAssistant) && scope != "" {
+		return ModelAccessKey(string(channel), scope)
 	}
 	return scope
 }
@@ -30,6 +32,17 @@ func ChannelCooldownScope(channel Channel, scope string) string {
 type channelCandidate struct {
 	index   int
 	channel Channel
+}
+
+// ParseChannelCooldownScope decodes scoped generation cooldowns for audit/UI.
+// Unprefixed historical scopes retain their original Playground meaning.
+func ParseChannelCooldownScope(scope string) (Channel, string, bool) {
+	for _, channel := range []Channel{ChannelBuild, ChannelAssistant} {
+		if model, ok := strings.CutPrefix(scope, string(channel)+":"); ok {
+			return channel, model, true
+		}
+	}
+	return ChannelPlayground, scope, false
 }
 
 // SetUpstreamChannels 设置生成请求按顺序启用的上游通道
@@ -91,7 +104,14 @@ func (p *AccountPool) enabledChannelsLocked() []Channel {
 	if len(p.channels) == 0 {
 		return []Channel{ChannelPlayground}
 	}
-	return p.channels
+	// An opt-in assistant route must never change the legacy bare-model policy.
+	var channels []Channel
+	for _, channel := range p.channels {
+		if channel != ChannelAssistant {
+			channels = append(channels, channel)
+		}
+	}
+	return channels
 }
 
 // generationChannelSelection 判断选择是否属于按通道调度的生成请求
@@ -112,14 +132,17 @@ func buildMethodSelection(selection AccountSelection) bool {
 
 // selectionChannelsLocked 返回选择可使用的通道顺序，优先通道排在首位；embedding 只使用 Build，实时方法依次尝试 Playground 与 Build，其余非生成请求只使用 Playground RPC
 func (p *AccountPool) selectionChannelsLocked(selection AccountSelection) []Channel {
+	if selection.Channel == ChannelAssistant && !selection.StrictChannel {
+		return nil
+	}
 	if selection.StrictChannel {
 		if selection.Method != "generateContent" || !p.channelEnabledLocked(selection.Channel) {
 			return nil
 		}
-		if selection.Channel == ChannelBuild && !generationChannelSelection(selection) {
+		if selection.Channel != ChannelPlayground && !generationChannelSelection(selection) {
 			return nil
 		}
-		if selection.Channel != ChannelPlayground && selection.Channel != ChannelBuild {
+		if selection.Channel != ChannelPlayground && selection.Channel != ChannelBuild && selection.Channel != ChannelAssistant {
 			return nil
 		}
 		return []Channel{selection.Channel}
@@ -180,6 +203,9 @@ func (p *AccountPool) channelSupportsLocked(account *Account, channel Channel, s
 		}
 		return generationChannelSelection(selection) && p.channelEnabledLocked(ChannelBuild) &&
 			p.buildSupportsModelLocked(account, selection.ModelID, selection.anyTier)
+	case ChannelAssistant:
+		return generationChannelSelection(selection) && p.channelEnabledLocked(ChannelAssistant) &&
+			p.assistantSupportsModelLocked(account, selection.ModelID, selection.anyTier)
 	default:
 		return false
 	}
@@ -428,7 +454,11 @@ func (p *AccountPool) modelChannelsLocked(model Model, anyTier bool) []string {
 		selection.Method = buildMethods[index]
 	}
 	var channels []string
-	for _, channel := range p.selectionChannelsLocked(selection) {
+	candidates := p.selectionChannelsLocked(selection)
+	if selection.Method == "generateContent" && p.channelEnabledLocked(ChannelAssistant) {
+		candidates = append(candidates, ChannelAssistant)
+	}
+	for _, channel := range candidates {
 		for _, account := range p.accounts {
 			if account != nil && account.Config.Enabled && p.channelSupportsLocked(account, channel, selection) {
 				channels = append(channels, string(channel))

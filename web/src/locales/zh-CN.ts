@@ -187,12 +187,13 @@ export const messages = {
     'Camoufox 在后台浏览器页面中运行 WAA；纯 Go 在服务进程内运行 WAA，不下载也不启动 Camoufox。登录账户始终需要浏览器。切换后重启生成服务生效。',
   'settings.upstreamChannels': '上游通道',
   'settings.upstreamChannelsHelp':
-    'Playground 与 Build 是同一账户的两份独立额度，同时启用时按账户与通道组合调度，一个通道冷却后由另一个通道继续；至少启用一个。',
+    'Playground/Build 按通道调度；显式模型前缀禁止跨通道回退。Assistant 需单独启用，只接受 assistant/ 前缀，不进入裸名 auto；局部冷却独立，不保证上游额度完全独立。',
   'settings.modelMapping': '模型映射',
   'settings.modelMappingHelp':
     '把客户端使用的模型名映射到目录中的模型，每项写成 别名:模型 ID，多项用逗号分隔，例如 claude-haiku-5-5:gemini-3.8-flash。别名出现在模型列表中，能力取自目标模型。重启生成服务生效。',
   'channel.playground': 'Playground',
   'channel.build': 'Build',
+  'channel.assistant': 'Assistant',
   'logs.channel': '通道',
   'models.channels': '通道',
   'settings.temporaryChat': 'WAA 预热使用临时对话',

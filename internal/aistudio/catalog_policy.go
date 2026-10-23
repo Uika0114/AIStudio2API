@@ -25,6 +25,10 @@ func (p *AccountPool) publicTokenLimitsLocked(model Model) map[Channel]ModelToke
 			}
 		}
 	}
+	if p.channelEnabledLocked(ChannelAssistant) {
+		// Assistant has no verified native token-limit catalog.
+		limits[ChannelAssistant] = ModelTokenLimits{}
+	}
 	limits[ChannelBuild] = build
 	return limits
 }

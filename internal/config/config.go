@@ -56,7 +56,7 @@ var configKeys = [...]string{
 const LogFileMB = 10
 
 // upstreamChannels 表示生成请求可启用的上游通道
-var upstreamChannels = []string{"playground", "build"}
+var upstreamChannels = []string{"playground", "build", "assistant"}
 
 // WAABackendCamoufox 表示由 Camoufox 页面承担 WAA 生命周期
 const WAABackendCamoufox = "camoufox"
@@ -107,7 +107,7 @@ func Default() Config {
 		WarmStartupConcurrency: defaultWarmConcurrency,
 		PerAccountConcurrency:  defaultAccountConcurrency,
 		RoutingStrategy:        "round-robin",
-		UpstreamChannels:       append([]string(nil), upstreamChannels...),
+		UpstreamChannels:       []string{"playground", "build"},
 		WAABackend:             WAABackendCamoufox,
 	}
 }
@@ -356,7 +356,7 @@ func ParseModelMapping(value string) ([]ModelAlias, error) {
 			head, _, separated := strings.Cut(name, "/")
 			if separated {
 				switch strings.ToLower(head) {
-				case "playground", "build", "anti-truncation", "auto":
+				case "playground", "build", "assistant", "anti-truncation", "auto":
 					return nil, fmt.Errorf("MODEL_MAPPING 不能占用或映射到保留路由命名空间 %q", name)
 				}
 			}
@@ -380,7 +380,7 @@ func ParseUpstreamChannels(value string) []string {
 // validateUpstreamChannels 要求至少一个已知且不重复的上游通道
 func validateUpstreamChannels(channels []string) error {
 	if len(channels) == 0 {
-		return fmt.Errorf("UPSTREAM_CHANNELS 至少包含 playground 或 build")
+		return fmt.Errorf("UPSTREAM_CHANNELS 至少包含 playground、build 或 assistant")
 	}
 	seen := make(map[string]struct{}, len(channels))
 	for _, channel := range channels {
@@ -389,7 +389,7 @@ func validateUpstreamChannels(channels []string) error {
 			known = known || channel == candidate
 		}
 		if !known {
-			return fmt.Errorf("UPSTREAM_CHANNELS 只能包含 playground 与 build")
+			return fmt.Errorf("UPSTREAM_CHANNELS 只能包含 playground、build 与 assistant")
 		}
 		if _, exists := seen[channel]; exists {
 			return fmt.Errorf("UPSTREAM_CHANNELS 通道 %s 重复", channel)
