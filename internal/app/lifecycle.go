@@ -375,6 +375,20 @@ func (manager *runtimeManager) ChromeImportProfiles(ctx context.Context) ([]api.
 	return manager.current.admin.ChromeImportProfiles(ctx)
 }
 
+// ChromeImportProfilesFrom forwards the source-aware contract through the same
+// live-generation facade that runServer exposes as its HTTP Admin service.
+func (manager *runtimeManager) ChromeImportProfilesFrom(ctx context.Context, root string) (api.ChromeImportDiscovery, error) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	source, ok := manager.current.admin.(api.ChromeSourceAdmin)
+	if !ok {
+		return api.ChromeImportDiscovery{}, &adminOperationError{status: http.StatusNotImplemented, code: "chrome_source_unsupported", message: "当前生成服务未实现独立 Chrome 来源合同"}
+	}
+	return source.ChromeImportProfilesFrom(ctx, root)
+}
+
+var _ api.ChromeSourceAdmin = (*runtimeManager)(nil)
+
 // ImportChromeAccounts 在当前生成服务批量导入 Chrome 账号
 func (manager *runtimeManager) ImportChromeAccounts(ctx context.Context, input api.ChromeImportInput) ([]api.AdminAccount, error) {
 	manager.mu.RLock()
