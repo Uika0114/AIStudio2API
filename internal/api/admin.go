@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
@@ -188,19 +189,38 @@ type AccountCreateInput struct {
 
 // ChromeImportProfile 表示可从本机 Chrome 导入的账号
 type ChromeImportProfile struct {
-	ID          string `json:"id"`
-	Profile     string `json:"profile"`
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email"`
-	Locale      string `json:"locale"`
+	ID                string `json:"id"`
+	Profile           string `json:"profile"`
+	DisplayName       string `json:"display_name"`
+	Email             string `json:"email"`
+	Locale            string `json:"locale"`
+	ChromeRoot        string `json:"chrome_root"`
+	Importable        bool   `json:"importable"`
+	TokenFormat       string `json:"token_format,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	ExistingAccountID string `json:"existing_account_id,omitempty"`
+}
+
+// ChromeImportDiscovery binds the displayed choices to their resolved root.
+type ChromeImportDiscovery struct {
+	ChromeRoot string                `json:"chrome_root"`
+	Profiles   []ChromeImportProfile `json:"profiles"`
+}
+
+// ChromeSourceAdmin extends legacy default discovery without breaking its API.
+type ChromeSourceAdmin interface {
+	ChromeImportProfilesFrom(context.Context, string) (ChromeImportDiscovery, error)
 }
 
 // ChromeImportInput 表示批量导入的 Chrome 账号与账户环境
 type ChromeImportInput struct {
-	AccountIDs []string `json:"account_ids"`
-	Proxy      string   `json:"proxy"`
-	Locale     string   `json:"locale"`
-	Timezone   string   `json:"timezone"`
+	AccountIDs      []string `json:"account_ids"`
+	Proxy           string   `json:"proxy"`
+	Locale          string   `json:"locale"`
+	Timezone        string   `json:"timezone"`
+	ChromeRoot      string   `json:"chrome_root,omitempty"`
+	RebindAccountID string   `json:"rebind_account_id,omitempty"`
+	ConfirmRebind   bool     `json:"confirm_rebind,omitempty"`
 }
 
 // RuntimeConfig 表示全局运行配置
@@ -272,6 +292,8 @@ func (s *server) registerAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts", s.handleCreateAccount)
 	mux.HandleFunc("GET /api/accounts/import/chrome", s.handleChromeImportProfiles)
 	mux.HandleFunc("POST /api/accounts/import/chrome", s.handleImportChromeAccounts)
+	mux.HandleFunc("GET /api/accounts/import/chrome/source", s.handleChromeSourceProfiles)
+	mux.HandleFunc("POST /api/accounts/import/chrome/source", s.handleImportChromeSource)
 	mux.HandleFunc("POST /api/pairing", s.handleCreatePairing)
 	mux.HandleFunc("PUT /api/accounts/{id}", s.handleUpdateAccount)
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
@@ -342,6 +364,20 @@ func (s *server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleChromeImportProfiles(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("chrome_root")
+	if source, ok := s.config.Admin.(ChromeSourceAdmin); ok {
+		discovery, err := source.ChromeImportProfilesFrom(r.Context(), root)
+		if err != nil {
+			writeAdminUpstreamError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, discovery)
+		return
+	}
+	if root != "" {
+		writeAdminError(w, http.StatusNotImplemented, "chrome_source_unsupported", "此管理服务未实现独立 Chrome 来源合同")
+		return
+	}
 	profiles, err := s.config.Admin.ChromeImportProfiles(r.Context())
 	if err != nil {
 		writeAdminUpstreamError(w, err)
@@ -351,17 +387,45 @@ func (s *server) handleChromeImportProfiles(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *server) handleImportChromeAccounts(w http.ResponseWriter, r *http.Request) {
+	s.handleChromeImport(w, r, false)
+}
+
+func (s *server) handleChromeImport(w http.ResponseWriter, r *http.Request, requireSource bool) {
+	if requireSource {
+		if _, ok := s.config.Admin.(ChromeSourceAdmin); !ok {
+			writeAdminError(w, http.StatusNotImplemented, "chrome_source_unsupported", "此管理服务未实现独立 Chrome 来源合同")
+			return
+		}
+	}
 	var input ChromeImportInput
 	if err := decodeJSON(r, &input); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
+	}
+	if requireSource && strings.TrimSpace(input.ChromeRoot) == "" {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", "来源导入必须提交发现结果中的精确 Chrome 根")
+		return
+	}
+	if input.RebindAccountID != "" && !input.ConfirmRebind || input.RebindAccountID == "" && input.ConfirmRebind {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", "Chrome 来源重绑必须指定单一目标并显式确认")
+		return
+	}
+	if input.ChromeRoot != "" || input.RebindAccountID != "" {
+		if _, ok := s.config.Admin.(ChromeSourceAdmin); !ok {
+			writeAdminError(w, http.StatusNotImplemented, "chrome_source_unsupported", "此管理服务未实现独立 Chrome 来源合同")
+			return
+		}
 	}
 	accounts, err := s.config.Admin.ImportChromeAccounts(r.Context(), input)
 	if err != nil {
 		writeAdminUpstreamError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string][]AdminAccount{"accounts": accounts})
+	status := http.StatusCreated
+	if input.RebindAccountID != "" {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string][]AdminAccount{"accounts": accounts})
 }
 
 func (s *server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {

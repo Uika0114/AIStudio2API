@@ -17,24 +17,26 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
-	"github.com/Mag1cFall/AIStudio2API/internal/chromeauth"
 	"github.com/Mag1cFall/AIStudio2API/internal/config"
 )
 
 // runtimeAdmin 投影运行时权威状态
 type runtimeAdmin struct {
-	lifecycle   context.Context
-	pool        *aistudio.AccountPool
-	store       *aistudio.AccountStore
-	service     *trackedService
-	requests    *requestRegistry
-	login       aistudio.IsolatedLoginDriver
-	workers     *accountWorkerManager
-	headers     *accountHeaderProvider
-	configPath  string
-	config      config.Config
-	proxies     *aistudio.ProxyPool
-	globalProxy string
+	lifecycle           context.Context
+	pool                *aistudio.AccountPool
+	store               *aistudio.AccountStore
+	service             *trackedService
+	requests            *requestRegistry
+	login               aistudio.IsolatedLoginDriver
+	workers             *accountWorkerManager
+	headers             *accountHeaderProvider
+	configPath          string
+	config              config.Config
+	proxies             *aistudio.ProxyPool
+	globalProxy         string
+	chrome              chromeAccountProvider
+	chromeCreate        func(context.Context, aistudio.AccountConfig, aistudio.StorageState) (api.AdminAccount, error)
+	chromePrepareRebind func(string) (func(bool), error)
 }
 
 // requestRegistry 保存活动请求与事件订阅
@@ -212,87 +214,22 @@ func (admin *runtimeAdmin) CreateAccount(ctx context.Context, input api.AccountC
 	return created, nil
 }
 
-func (admin *runtimeAdmin) ChromeImportProfiles(context.Context) ([]api.ChromeImportProfile, error) {
-	root, err := chromeauth.DefaultChromeRoot()
+func (admin *runtimeAdmin) ChromeImportProfiles(ctx context.Context) ([]api.ChromeImportProfile, error) {
+	discovery, err := admin.ChromeImportProfilesFrom(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	accounts, err := chromeauth.Discover(root)
-	if err != nil {
-		return nil, err
-	}
-	existing := make(map[string]struct{})
-	for _, status := range admin.pool.Status() {
-		existing[strings.ToLower(strings.TrimSpace(status.ID))] = struct{}{}
-	}
-	profiles := make([]api.ChromeImportProfile, 0, len(accounts))
-	for _, account := range accounts {
-		email := strings.ToLower(strings.TrimSpace(account.Email))
-		if !account.Importable || email == "" {
-			continue
+	profiles := make([]api.ChromeImportProfile, 0, len(discovery.Profiles))
+	for _, profile := range discovery.Profiles {
+		if profile.Importable && profile.ExistingAccountID == "" {
+			profiles = append(profiles, profile)
 		}
-		if _, exists := existing[email]; exists {
-			continue
-		}
-		existing[email] = struct{}{}
-		profiles = append(profiles, api.ChromeImportProfile{
-			ID: account.ID, Profile: account.Profile, DisplayName: account.DisplayName, Email: email, Locale: account.Locale,
-		})
 	}
 	return profiles, nil
 }
 
 func (admin *runtimeAdmin) ImportChromeAccounts(ctx context.Context, input api.ChromeImportInput) ([]api.AdminAccount, error) {
-	if len(input.AccountIDs) == 0 {
-		return nil, invalidAccount(fmt.Errorf("未选择 Chrome 账号"))
-	}
-	root, err := chromeauth.DefaultChromeRoot()
-	if err != nil {
-		return nil, err
-	}
-	accountProxy := strings.TrimSpace(input.Proxy)
-	results, err := chromeauth.Import(ctx, chromeauth.ImportOptions{
-		ChromeRoot: root, Proxy: admin.effectiveProxy(accountProxy), AccountIDs: input.AccountIDs,
-	})
-	if err != nil {
-		return nil, err
-	}
-	configs := make([]aistudio.AccountConfig, len(results))
-	seen := make(map[string]struct{}, len(results))
-	for index, result := range results {
-		email := strings.ToLower(strings.TrimSpace(result.Email))
-		if _, exists := seen[email]; exists {
-			return nil, invalidAccount(fmt.Errorf("Chrome 账号重复: %s", email))
-		}
-		seen[email] = struct{}{}
-		accountConfig := aistudio.DefaultAccountConfig(email)
-		accountConfig.Proxy = accountProxy
-		if locale := strings.TrimSpace(input.Locale); locale != "" {
-			accountConfig.Locale = locale
-		} else if locale := strings.TrimSpace(result.Locale); locale != "" {
-			accountConfig.Locale = locale
-		}
-		if timezone := strings.TrimSpace(input.Timezone); timezone != "" {
-			accountConfig.Timezone = timezone
-		}
-		if err := accountConfig.Validate(); err != nil {
-			return nil, invalidAccount(err)
-		}
-		if _, err := aistudio.NewSigner().Sign(result.State); err != nil {
-			return nil, fmt.Errorf("认证状态无法用于 AI Studio: %w", err)
-		}
-		configs[index] = accountConfig
-	}
-	accounts := make([]api.AdminAccount, 0, len(results))
-	for index, result := range results {
-		account, err := admin.addAccount(ctx, configs[index], result.State, "")
-		if err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, account)
-		admin.requests.log("auth", "INFO", "Chrome 账户已导入 | 账户="+account.Label)
-	}
-	return accounts, nil
+	return admin.importChromeFrom(ctx, input)
 }
 
 // ImportAccountState 导入远程配对上传的认证状态与 Camoufox 指纹

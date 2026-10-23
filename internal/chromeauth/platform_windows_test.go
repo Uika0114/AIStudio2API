@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestDiscoverAndReadMultipleAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"111", "222"} {
-		if _, err = db.Exec("INSERT INTO token_service VALUES(?,?,?)", "AccountId-"+id, []byte("v20-fixture-"+id), []byte("binding-"+id)); err != nil {
+		if _, err = db.Exec("INSERT INTO token_service VALUES(?,?,?)", "AccountId-"+id, []byte("v20-fixture-"+id+strings.Repeat("x", 32)), []byte("binding-"+id)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -37,7 +38,7 @@ func TestDiscoverAndReadMultipleAccounts(t *testing.T) {
 	if !accounts[0].Importable || !accounts[1].Importable || accounts[2].Importable {
 		t.Fatal("incorrect per-account eligibility")
 	}
-	selected, err := selectAccounts(accounts, nil, nil, []string{"Default/222"})
+	selected, err := selectAccounts(accounts, nil, nil, []string{accounts[1].ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +46,7 @@ func TestDiscoverAndReadMultipleAccounts(t *testing.T) {
 		t.Fatal("selected wrong account")
 	}
 	gaia, token, binding, err := readTokenService(root, selected[0].Profile, selected[0].GaiaID)
-	if err != nil || gaia != "222" || string(token) != "v20-fixture-222" || string(binding) != "binding-222" {
+	if err != nil || gaia != "222" || string(token) != "v20-fixture-222"+strings.Repeat("x", 32) || string(binding) != "binding-222" {
 		t.Fatal("credentials do not match selection")
 	}
 	if _, _, _, err = readTokenService(root, "Default", "999"); err == nil {
@@ -54,7 +55,7 @@ func TestDiscoverAndReadMultipleAccounts(t *testing.T) {
 	if _, err = selectAccounts(accounts, nil, nil, []string{"Default/999"}); err == nil {
 		t.Fatal("stale selection must fail")
 	}
-	if _, err = selectAccounts(accounts, nil, nil, []string{"Default/333"}); err == nil {
+	if _, err = selectAccounts(accounts, nil, nil, []string{accounts[2].ID}); err == nil {
 		t.Fatal("missing credentials must fail")
 	}
 }

@@ -55,6 +55,12 @@ func TestAuthReplayKeepsStrictChannelAndPhysicalAttemptIDs(t *testing.T) {
 				cookie.Name = name
 				state.Cookies = append(state.Cookies, cookie)
 			}
+			if err := state.SetAuthExtension(aistudio.AuthExtension{Source: aistudio.AuthSource{Browser: "chrome", ChromeRoot: t.TempDir(), Profile: "Default", GaiaID: "fixture-gaia", Email: "fixture@example.invalid"}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := aistudio.WriteStorageState(storage, state); err != nil {
+				t.Fatal(err)
+			}
 			model := aistudio.Model{ID: "fixture-model", Methods: []string{"generateContent"}, Capabilities: map[string]bool{"chat_model": true}}
 			account := &aistudio.Account{ID: "fixture@example.invalid", Directory: directory, StoragePath: storage, RuntimePath: filepath.Join(directory, "fixture-runtime.json"), StorageState: state, Config: aistudio.DefaultAccountConfig("fixture"), State: aistudio.AccountReady, Models: []aistudio.Model{model}}
 			account.Config.Enabled = true
@@ -81,7 +87,7 @@ func TestAuthReplayKeepsStrictChannelAndPhysicalAttemptIDs(t *testing.T) {
 				t.Fatal(err)
 			}
 			refreshes := 0
-			refresher := &authRuntimeRefresher{pool: pool, requests: newRequestRegistry(t.Context()), chromeHas: func(string) bool { return true }, importCurrent: func(_ context.Context, source aistudio.AuthSource, _ *aistudio.ChromeOAuthMaterial, _ string) (aistudio.StorageState, error) {
+			refresher := &authRuntimeRefresher{pool: pool, requests: newRequestRegistry(t.Context()), importCurrent: func(_ context.Context, source aistudio.AuthSource, _ *aistudio.ChromeOAuthMaterial, _ string) (aistudio.StorageState, error) {
 				refreshes++
 				updated := state
 				err := updated.SetAuthExtension(aistudio.AuthExtension{Source: source, OAuth: &aistudio.ChromeOAuthMaterial{GaiaID: "fixture-gaia", RefreshToken: "fixture-not-real"}})

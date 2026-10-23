@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -29,64 +28,7 @@ func ensurePlatformImport() error {
 }
 
 func discoverPlatform(chromeRoot string) ([]Account, error) {
-	data, err := os.ReadFile(filepath.Join(chromeRoot, "Local State"))
-	if err != nil {
-		return nil, fmt.Errorf("读取 Chrome Local State: %w", err)
-	}
-	var state struct {
-		Variations struct {
-			SafeSeedLocale string `json:"safe_seed_locale"`
-		} `json:"variations"`
-		Profile struct {
-			InfoCache map[string]struct {
-				Name     string `json:"name"`
-				UserName string `json:"user_name"`
-			} `json:"info_cache"`
-		} `json:"profile"`
-	}
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("解析 Chrome Local State: %w", err)
-	}
-	if state.Profile.InfoCache == nil {
-		return nil, fmt.Errorf("Chrome Local State 缺少 profile.info_cache")
-	}
-
-	profiles := make([]string, 0, len(state.Profile.InfoCache))
-	for profile := range state.Profile.InfoCache {
-		profiles = append(profiles, profile)
-	}
-	sort.Slice(profiles, func(i int, j int) bool {
-		return naturalLess(profiles[i], profiles[j])
-	})
-	accounts := make([]Account, 0, len(profiles))
-	for _, profile := range profiles {
-		info := state.Profile.InfoCache[profile]
-		locale := profileLocale(chromeRoot, profile)
-		if locale == "" {
-			locale = state.Variations.SafeSeedLocale
-		}
-		identities, err := profileIdentities(chromeRoot, profile)
-		if err != nil {
-			accounts = append(accounts, Account{
-				ID: profile, Profile: profile, DisplayName: info.Name, Email: info.UserName, Locale: locale,
-			})
-			continue
-		}
-		seen := map[string]bool{}
-		for _, identity := range identities {
-			if identity.Gaia == "" || seen[identity.Gaia] {
-				continue
-			}
-			seen[identity.Gaia] = true
-			_, encrypted, bindingKey, tokenErr := readTokenService(chromeRoot, profile, identity.Gaia)
-			accounts = append(accounts, Account{
-				ID: profile + "/" + identity.Gaia, GaiaID: identity.Gaia,
-				Profile: profile, DisplayName: info.Name, Email: identity.Email, Locale: locale,
-				Importable: tokenErr == nil && strings.HasPrefix(string(encrypted), "v20") && len(bindingKey) != 0,
-			})
-		}
-	}
-	return accounts, nil
+	return discoverPlatformProfiles(chromeRoot, "")
 }
 
 // profileIdentity 为 Preferences.account_info 中的一个 Google 账号
@@ -97,7 +39,11 @@ type profileIdentity struct {
 
 // profileIdentities 读取 Profile 内全部 Google 账号的 Gaia ID 与邮箱
 func profileIdentities(chromeRoot string, profile string) ([]profileIdentity, error) {
-	data, err := os.ReadFile(filepath.Join(chromeRoot, profile, "Preferences"))
+	p, err := checkedChromePath(chromeRoot, profile, "Preferences")
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil, fmt.Errorf("读取 %s Preferences: %w", profile, err)
 	}
@@ -111,7 +57,11 @@ func profileIdentities(chromeRoot string, profile string) ([]profileIdentity, er
 }
 
 func profileLocale(chromeRoot string, profile string) string {
-	data, err := os.ReadFile(filepath.Join(chromeRoot, profile, "Preferences"))
+	p, err := checkedChromePath(chromeRoot, profile, "Preferences")
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return ""
 	}
@@ -133,45 +83,60 @@ func profileLocale(chromeRoot string, profile string) string {
 }
 
 func readTokenService(chromeRoot string, profile string, gaiaID string) (string, []byte, []byte, error) {
-	databasePath := filepath.Join(chromeRoot, profile, "Web Data")
-	uri := "file:" + filepath.ToSlash(databasePath) + "?mode=ro&immutable=1"
-	database, err := sql.Open("sqlite", uri)
+	if strings.TrimSpace(gaiaID) == "" {
+		return "", nil, nil, fmt.Errorf("缺少精确 Gaia 身份")
+	}
+	databasePath, err := checkedChromePath(chromeRoot, profile, "Web Data")
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("打开 %s Web Data: %w", profile, err)
+		return "", nil, nil, err
+	}
+	if err := ensureNoPendingWAL(databasePath); err != nil {
+		return "", nil, nil, err
+	}
+	database, err := sql.Open("sqlite", tokenDatabaseURI(databasePath))
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("打开 Chrome Web Data 失败")
 	}
 	defer database.Close()
 	database.SetMaxOpenConns(1)
-
-	rows, err := database.Query("SELECT service, encrypted_token, binding_key FROM token_service WHERE service = ?", "AccountId-"+gaiaID)
+	hasMTLS, err := tokenServiceHasMTLS(database)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("读取 %s token_service: %w", profile, err)
+		return "", nil, nil, err
+	}
+	query := "SELECT service, encrypted_token, binding_key, 0 FROM token_service WHERE service = ?"
+	if hasMTLS {
+		query = "SELECT service, encrypted_token, binding_key, COALESCE(mtls_token_binding,0) FROM token_service WHERE service = ?"
+	}
+	rows, err := database.Query(query, "AccountId-"+gaiaID)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("读取 Chrome token_service 失败")
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return "", nil, nil, fmt.Errorf("读取 %s token_service: %w", profile, err)
-		}
-		return "", nil, nil, fmt.Errorf("%s 的 token_service 记录数为 0", profile)
+		return "", nil, nil, fmt.Errorf("精确身份没有 token_service 记录")
 	}
 	var service string
-	var encryptedToken []byte
-	var bindingKey []byte
-	if err := rows.Scan(&service, &encryptedToken, &bindingKey); err != nil {
-		return "", nil, nil, fmt.Errorf("解析 %s token_service: %w", profile, err)
+	var encryptedToken, bindingKey []byte
+	var mtls int64
+	if err := rows.Scan(&service, &encryptedToken, &bindingKey, &mtls); err != nil {
+		return "", nil, nil, fmt.Errorf("解析 Chrome token_service 失败")
 	}
 	if rows.Next() {
-		return "", nil, nil, fmt.Errorf("%s 的 token_service 记录数大于 1", profile)
+		return "", nil, nil, fmt.Errorf("精确身份含重复 token_service 记录")
 	}
 	if err := rows.Err(); err != nil {
-		return "", nil, nil, fmt.Errorf("读取 %s token_service: %w", profile, err)
+		return "", nil, nil, fmt.Errorf("读取 Chrome token_service 失败")
 	}
-	if !strings.HasPrefix(service, "AccountId-") {
-		return "", nil, nil, fmt.Errorf("%s 的 token_service service 格式异常", profile)
+	if mtls != 0 {
+		return "", nil, nil, fmt.Errorf("不支持 Chrome mTLS token binding")
 	}
-	if len(encryptedToken) == 0 || len(bindingKey) == 0 {
-		return "", nil, nil, fmt.Errorf("%s 的 token_service 缺少认证材料", profile)
+	if service != "AccountId-"+gaiaID || len(encryptedToken) == 0 || len(bindingKey) == 0 {
+		return "", nil, nil, fmt.Errorf("Chrome token_service 身份或设备绑定材料不完整")
 	}
-	return strings.TrimPrefix(service, "AccountId-"), encryptedToken, bindingKey, nil
+	if err := ensureNoPendingWAL(databasePath); err != nil {
+		return "", nil, nil, err
+	}
+	return gaiaID, encryptedToken, bindingKey, nil
 }
 
 func naturalLess(left string, right string) bool {

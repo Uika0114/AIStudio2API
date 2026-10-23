@@ -13,9 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': 'Mot de passe de la console',
   'settings.keepPassword': 'Laisser vide pour conserver le mot de passe actuel',
   'settings.buildNative': 'Privilégier Build pour les requêtes sans streaming',
-  'settings.antiTruncationSystemPrompt': "Ajouter la consigne système anti-troncature",
+  'settings.antiTruncationSystemPrompt': 'Ajouter la consigne système anti-troncature',
   'settings.antiTruncationSystemPromptHelp':
-    "Ajoute la consigne system fixe uniquement aux variantes anti-troncature par outil. La désactivation conserve le schéma, le choix obligatoire des outils et la restitution du texte, sans supprimer les consignes originales ni l’historique. Activé par défaut.",
+    'Ajoute la consigne system fixe uniquement aux variantes anti-troncature par outil. La désactivation conserve le schéma, le choix obligatoire des outils et la restitution du texte, sans supprimer les consignes originales ni l’historique. Activé par défaut.',
   'app.title': 'Console AI Studio',
   'app.console': 'Console',
   'app.gateway': 'Passerelle de protocoles',
@@ -82,6 +82,22 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.browserLogin': 'Se connecter avec le navigateur',
   'accounts.importChrome': 'Importer depuis Chrome',
   'accounts.chromeTitle': 'Sélectionner des comptes Chrome',
+  'accounts.chromeRootCustom': 'Instance Chrome dédiée',
+  'accounts.chromeRootDefault': 'Chrome par défaut (choix explicite)',
+  'accounts.chromeRootLabel': 'Racine User Data',
+  'accounts.chromeDiscover': 'Lire le dossier choisi',
+  'accounts.chromeSourceHint':
+    'Seul le dossier choisi est lu. Quittez normalement ce Chrome. Aucun Profile ne sera déplacé.',
+  'accounts.chromeRootRequired': 'Saisissez le chemin absolu User Data de cette instance.',
+  'accounts.chromeSourceUnsupported':
+    'Le serveur ne fournit pas le contrat de source Chrome. Déployez la version correspondante.',
+  'accounts.chromeRebind': 'Associer la source Chrome',
+  'accounts.chromeRebindConfirm':
+    'Confirmer uniquement la source ; conserver le proxy, les réglages et les usages du compte',
+  'accounts.chromeRebindComplete': 'Source Chrome réassociée',
+  'accounts.chromeExisting': 'Ce compte existe ; utilisez son action Associer la source Chrome',
+  'accounts.chromeChooseRoot':
+    'Choisissez un dossier et lisez ses comptes avant de sélectionner les identités.',
   'accounts.chromeEmpty': 'Aucun compte Chrome à importer',
   'accounts.importSelected': 'Importer la sélection',
   'accounts.selectAll': 'Tout sélectionner',

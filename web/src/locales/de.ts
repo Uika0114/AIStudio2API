@@ -13,9 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': 'Konsolenpasswort',
   'settings.keepPassword': 'Leer lassen, um das aktuelle Passwort zu behalten',
   'settings.buildNative': 'Build für Anfragen ohne Streaming bevorzugen',
-  'settings.antiTruncationSystemPrompt': "Anti-Trunkierungs-Systemanweisung anhängen",
+  'settings.antiTruncationSystemPrompt': 'Anti-Trunkierungs-Systemanweisung anhängen',
   'settings.antiTruncationSystemPromptHelp':
-    "Hängt die feste system-Anweisung nur bei Tool-Anti-Trunkierungsvarianten an. Ausschalten behält Tool-Schema, verpflichtende Tool-Auswahl und Textausgabe bei und entfernt keine Anweisungen aus dem ursprünglichen Systemtext oder Verlauf. Standardmäßig aktiviert.",
+    'Hängt die feste system-Anweisung nur bei Tool-Anti-Trunkierungsvarianten an. Ausschalten behält Tool-Schema, verpflichtende Tool-Auswahl und Textausgabe bei und entfernt keine Anweisungen aus dem ursprünglichen Systemtext oder Verlauf. Standardmäßig aktiviert.',
   'app.title': 'AI Studio Konsole',
   'app.console': 'Konsole',
   'app.gateway': 'Protokoll-Gateway',
@@ -82,6 +82,22 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.browserLogin': 'Im Browser anmelden',
   'accounts.importChrome': 'Aus Chrome importieren',
   'accounts.chromeTitle': 'Chrome-Konten auswählen',
+  'accounts.chromeRootCustom': 'Dedizierte Chrome-Instanz',
+  'accounts.chromeRootDefault': 'Standard-Chrome (ausdrückliche Auswahl)',
+  'accounts.chromeRootLabel': 'User-Data-Stammverzeichnis',
+  'accounts.chromeDiscover': 'Ausgewähltes Verzeichnis lesen',
+  'accounts.chromeSourceHint':
+    'Nur dieses Verzeichnis wird gelesen. Chrome zuvor regulär beenden. Profile werden nicht verschoben.',
+  'accounts.chromeRootRequired': 'Absoluten User-Data-Pfad der dedizierten Instanz eingeben.',
+  'accounts.chromeSourceUnsupported':
+    'Der Server unterstützt den Chrome-Quellvertrag nicht. Die passende Version bereitstellen.',
+  'accounts.chromeRebind': 'Chrome-Quelle binden',
+  'accounts.chromeRebindConfirm':
+    'Nur die Quelle neu binden; Proxy, Einstellungen und Nutzung dieses Kontos beibehalten',
+  'accounts.chromeRebindComplete': 'Chrome-Quelle neu gebunden',
+  'accounts.chromeExisting': 'Konto vorhanden; dessen Aktion Chrome-Quelle binden verwenden',
+  'accounts.chromeChooseRoot':
+    'Verzeichnis auswählen und Konten lesen, dann Identitäten auswählen.',
   'accounts.chromeEmpty': 'Keine Chrome-Konten zum Importieren vorhanden',
   'accounts.importSelected': 'Auswahl importieren',
   'accounts.selectAll': 'Alle auswählen',

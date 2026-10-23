@@ -32,6 +32,7 @@ interface AccountResponse {
 }
 
 interface ChromeProfilesResponse {
+  chrome_root: string
   profiles: ChromeImportProfile[]
 }
 
@@ -174,10 +175,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  chromeImportProfiles: async () =>
-    (await requestJSON<ChromeProfilesResponse>('/api/accounts/import/chrome')).profiles,
+  chromeImportProfiles: (root: string) =>
+    requestJSON<ChromeProfilesResponse>(
+      `/api/accounts/import/chrome/source?${new URLSearchParams({ chrome_root: root }).toString()}`,
+    ),
   importChromeAccounts: (input: ChromeImportInput) =>
-    requestJSON<AccountsResponse>('/api/accounts/import/chrome', {
+    requestJSON<AccountsResponse>('/api/accounts/import/chrome/source', {
       method: 'POST',
       body: JSON.stringify(input),
     }),

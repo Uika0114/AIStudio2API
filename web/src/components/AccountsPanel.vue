@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n, type TranslationKey } from '@/i18n'
 import { maskedProxy } from '@/proxy'
@@ -36,6 +36,13 @@ const pendingAction = ref('')
 const refreshing = reactive(new Set<string>())
 const refreshingAll = ref(false)
 const chromeProfiles = ref<ChromeImportProfile[]>([])
+const chromeRootMode = ref<'custom' | 'default'>('custom')
+const chromeRootInput = ref('')
+const chromeResolvedRoot = ref('')
+const chromeDiscoveredKey = ref('')
+const chromeRebindAccountID = ref('')
+const chromeRebindConfirmed = ref(false)
+let chromeDiscoveryGeneration = 0
 const pairing = ref<PairingToken | null>(null)
 const copiedPairing = ref('')
 const pairingCommand = `${navigator.userAgent.includes('Windows') ? 'start.bat' : './aistudio2api'} setup --remote ${window.location.origin}`
@@ -48,16 +55,75 @@ const pairingInsecure =
 // clipboardAvailable 表示页面处于可使用剪贴板 API 的安全上下文
 const clipboardAvailable = window.isSecureContext
 const selectedChromeProfiles = ref<string[]>([])
+const chromeVisibleProfiles = computed(() =>
+  chromeProfiles.value.filter(
+    (profile) =>
+      !chromeRebindAccountID.value || profile.existing_account_id === chromeRebindAccountID.value,
+  ),
+)
+const chromeEligibleProfiles = computed(() =>
+  chromeVisibleProfiles.value.filter(
+    (profile) =>
+      profile.importable &&
+      profile.chrome_root === chromeResolvedRoot.value &&
+      (chromeRebindAccountID.value
+        ? profile.existing_account_id === chromeRebindAccountID.value
+        : !profile.existing_account_id),
+  ),
+)
 const allChromeProfilesSelected = computed(
   () =>
-    chromeProfiles.value.length > 0 &&
-    selectedChromeProfiles.value.length === chromeProfiles.value.length,
+    chromeEligibleProfiles.value.length > 0 &&
+    selectedChromeProfiles.value.length === chromeEligibleProfiles.value.length,
 )
-
+const chromeCanImport = computed(
+  () =>
+    pendingAction.value === '' &&
+    chromeResolvedRoot.value !== '' &&
+    chromeDiscoveredKey.value === chromeSourceKey() &&
+    selectedChromeProfiles.value.length > 0 &&
+    selectedChromeProfiles.value.every((id) =>
+      chromeEligibleProfiles.value.some((profile) => profile.id === id),
+    ) &&
+    (!chromeRebindAccountID.value ||
+      (selectedChromeProfiles.value.length === 1 &&
+        chromeRebindConfirmed.value &&
+        props.accounts.some((account) => account.id === chromeRebindAccountID.value))),
+)
+function chromeSourceKey(): string {
+  return (
+    chromeRootMode.value +
+    ':' +
+    (chromeRootMode.value === 'custom' ? chromeRootInput.value.trim() : '')
+  )
+}
+function invalidateChromeDiscovery(): void {
+  chromeDiscoveryGeneration++
+  chromeResolvedRoot.value = ''
+  chromeDiscoveredKey.value = ''
+  chromeProfiles.value = []
+  selectedChromeProfiles.value = []
+  chromeRebindConfirmed.value = false
+  if (pendingAction.value === 'chrome-discover') pendingAction.value = ''
+}
+watch([chromeRootMode, chromeRootInput], invalidateChromeDiscovery)
+function isChromeProfileEligible(profile: ChromeImportProfile): boolean {
+  return chromeEligibleProfiles.value.some((candidate) => candidate.id === profile.id)
+}
+function toggleChromeProfile(profile: ChromeImportProfile): void {
+  if (pendingAction.value !== '' || !isChromeProfileEligible(profile)) return
+  chromeRebindConfirmed.value = false
+  if (chromeRebindAccountID.value) selectedChromeProfiles.value = [profile.id]
+  else
+    selectedChromeProfiles.value = selectedChromeProfiles.value.includes(profile.id)
+      ? selectedChromeProfiles.value.filter((id) => id !== profile.id)
+      : [...selectedChromeProfiles.value, profile.id]
+}
 function toggleAllChromeProfiles(): void {
+  if (chromeRebindAccountID.value || pendingAction.value !== '') return
   selectedChromeProfiles.value = allChromeProfilesSelected.value
     ? []
-    : chromeProfiles.value.map((profile) => profile.id)
+    : chromeEligibleProfiles.value.map((profile) => profile.id)
 }
 const accountEnvironment = reactive({
   proxy: '',
@@ -150,47 +216,82 @@ async function copyPairing(kind: 'command' | 'token', text: string): Promise<voi
   }
 }
 
-// openChromeImport 读取本机可导入的 Chrome 账户
-async function openChromeImport(): Promise<void> {
+// Opening the dialog never discovers a browser source.
+function openChromeImport(account?: Account): void {
+  if (pendingAction.value !== '') return
+  invalidateChromeDiscovery()
+  chromeRebindAccountID.value = account?.id ?? ''
+  chromeRootMode.value = 'custom'
+  chromeRootInput.value = ''
+  showChromeImport.value = true
+}
+async function discoverChromeProfiles(): Promise<void> {
+  if (pendingAction.value !== '') return
+  const root = chromeRootMode.value === 'custom' ? chromeRootInput.value.trim() : ''
+  if (chromeRootMode.value === 'custom' && root === '') {
+    actionError(new Error(t('accounts.chromeRootRequired')))
+    return
+  }
+  invalidateChromeDiscovery()
+  const generation = ++chromeDiscoveryGeneration
+  const key = chromeSourceKey()
   pendingAction.value = 'chrome-discover'
   try {
-    chromeProfiles.value = await api.chromeImportProfiles()
-    selectedChromeProfiles.value = []
-    showChromeImport.value = true
+    const result = await api.chromeImportProfiles(root)
+    if (
+      generation !== chromeDiscoveryGeneration ||
+      !showChromeImport.value ||
+      key !== chromeSourceKey()
+    )
+      return
+    if (
+      typeof result.chrome_root !== 'string' ||
+      result.chrome_root === '' ||
+      !Array.isArray(result.profiles) ||
+      result.profiles.some((profile) => profile.chrome_root !== result.chrome_root)
+    ) {
+      throw new Error(t('accounts.chromeSourceUnsupported'))
+    }
+    chromeProfiles.value = result.profiles
+    chromeResolvedRoot.value = result.chrome_root
+    chromeDiscoveredKey.value = key
   } catch (error) {
-    actionError(error)
+    if (generation === chromeDiscoveryGeneration && showChromeImport.value) actionError(error)
   } finally {
-    pendingAction.value = ''
+    if (generation === chromeDiscoveryGeneration && pendingAction.value === 'chrome-discover')
+      pendingAction.value = ''
   }
 }
-
 function closeChromeImport(): void {
   if (pendingAction.value === 'chrome-import') return
   showChromeImport.value = false
-  chromeProfiles.value = []
-  selectedChromeProfiles.value = []
+  invalidateChromeDiscovery()
 }
-
-// importChromeAccounts 导入用户选中的 Chrome 账户
 async function importChromeAccounts(): Promise<void> {
+  if (!chromeCanImport.value) return
+  const target = chromeRebindAccountID.value
   pendingAction.value = 'chrome-import'
   try {
     const result = await api.importChromeAccounts({
       account_ids: [...selectedChromeProfiles.value],
-      ...accountEnvironment,
+      chrome_root: chromeResolvedRoot.value,
+      ...(target ? { rebind_account_id: target, confirm_rebind: true } : { ...accountEnvironment }),
     })
     showChromeImport.value = false
-    chromeProfiles.value = []
-    selectedChromeProfiles.value = []
+    invalidateChromeDiscovery()
     emit('refresh')
     emit(
       'notice',
-      t(
-        result.accounts.length === 1 ? 'accounts.importCompleteOne' : 'accounts.importComplete',
-      ).replace('{count}', String(result.accounts.length)),
+      target
+        ? t('accounts.chromeRebindComplete')
+        : t(
+            result.accounts.length === 1 ? 'accounts.importCompleteOne' : 'accounts.importComplete',
+          ).replace('{count}', String(result.accounts.length)),
       'success',
     )
   } catch (error) {
+    invalidateChromeDiscovery()
+    emit('refresh') // A partial batch must be observed, never automatically replayed.
     actionError(error)
   } finally {
     pendingAction.value = ''
@@ -321,7 +422,7 @@ async function refreshAllAccounts(): Promise<void> {
           type="button"
           :disabled="pendingAction !== ''"
           :aria-busy="pendingAction === 'chrome-discover'"
-          @click="openChromeImport"
+          @click="openChromeImport()"
         >
           <UiIcon name="accounts" :size="15" />
           {{ t('accounts.importChrome') }}
@@ -441,6 +542,16 @@ async function refreshAllAccounts(): Promise<void> {
               @click="beginEdit(account)"
             >
               {{ t('common.edit') }}
+            </button>
+            <button
+              class="rounded border border-line bg-raised px-3 py-1 text-xs text-gray-300 transition hover:bg-line disabled:opacity-50"
+              type="button"
+              :disabled="
+                pendingAction !== '' || refreshing.has(account.id) || account.state === 'busy'
+              "
+              @click="openChromeImport(account)"
+            >
+              {{ t('accounts.chromeRebind') }}
             </button>
             <button
               class="rounded border border-line bg-raised px-3 py-1 text-xs text-gray-300 transition hover:bg-line disabled:opacity-50"
@@ -639,11 +750,13 @@ async function refreshAllAccounts(): Promise<void> {
 
       <div v-if="showChromeImport" class="modal-overlay" @click.self="closeChromeImport">
         <form
-          class="mx-4 w-full max-w-lg rounded-lg border border-line bg-panel p-6 shadow-xl"
+          class="mx-4 max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-line bg-panel p-6 shadow-xl"
           @submit.prevent="importChromeAccounts"
         >
           <div class="mb-4 flex items-center justify-between">
-            <h3 class="text-lg font-bold text-white">{{ t('accounts.chromeTitle') }}</h3>
+            <h3 class="text-lg font-bold text-white">
+              {{ t(chromeRebindAccountID ? 'accounts.chromeRebind' : 'accounts.chromeTitle') }}
+            </h3>
             <button
               class="rounded p-1 text-gray-500 hover:bg-line hover:text-white disabled:opacity-50"
               type="button"
@@ -654,7 +767,44 @@ async function refreshAllAccounts(): Promise<void> {
               <UiIcon name="close" :size="16" />
             </button>
           </div>
-          <div class="mb-4 space-y-4">
+          <p v-if="chromeRebindAccountID" class="mb-3 break-all font-mono text-sm text-blue-300">
+            {{ chromeRebindAccountID }}
+          </p>
+          <div class="mb-4 space-y-3">
+            <select
+              v-model="chromeRootMode"
+              class="w-full rounded border border-line bg-canvas px-3 py-2 text-white"
+              :disabled="pendingAction !== ''"
+            >
+              <option value="custom">{{ t('accounts.chromeRootCustom') }}</option>
+              <option value="default">{{ t('accounts.chromeRootDefault') }}</option>
+            </select>
+            <label v-if="chromeRootMode === 'custom'" class="block">
+              <span class="mb-1 block text-sm text-gray-400">{{
+                t('accounts.chromeRootLabel')
+              }}</span>
+              <input
+                v-model.trim="chromeRootInput"
+                class="w-full rounded border border-line bg-canvas px-3 py-2 font-mono text-sm text-white"
+                placeholder="C:/path/to/Chrome User Data"
+                :disabled="pendingAction !== ''"
+              />
+            </label>
+            <p class="text-xs text-gray-400">{{ t('accounts.chromeSourceHint') }}</p>
+            <button
+              type="button"
+              class="rounded border border-line bg-raised px-3 py-2 text-sm text-gray-200 disabled:opacity-50"
+              :disabled="pendingAction !== ''"
+              :aria-busy="pendingAction === 'chrome-discover'"
+              @click="discoverChromeProfiles"
+            >
+              {{ t('accounts.chromeDiscover') }}
+            </button>
+            <p v-if="chromeResolvedRoot" class="break-all font-mono text-xs text-blue-300">
+              {{ chromeResolvedRoot }}
+            </p>
+          </div>
+          <div v-if="!chromeRebindAccountID" class="mb-4 space-y-4">
             <label class="block">
               <span class="mb-1 block text-sm font-medium text-gray-400">{{
                 t('accounts.proxy')
@@ -688,10 +838,16 @@ async function refreshAllAccounts(): Promise<void> {
               </label>
             </div>
           </div>
-          <div v-if="chromeProfiles.length === 0" class="py-8 text-center text-sm text-gray-500">
-            {{ t('accounts.chromeEmpty') }}
+          <div
+            v-if="chromeVisibleProfiles.length === 0"
+            class="py-8 text-center text-sm text-gray-500"
+          >
+            {{ t(chromeResolvedRoot ? 'accounts.chromeEmpty' : 'accounts.chromeChooseRoot') }}
           </div>
-          <div v-else class="mb-2 flex justify-end">
+          <div
+            v-else-if="!chromeRebindAccountID && chromeEligibleProfiles.length > 0"
+            class="mb-2 flex justify-end"
+          >
             <button
               class="text-xs text-blue-400 transition hover:text-blue-300"
               type="button"
@@ -700,17 +856,20 @@ async function refreshAllAccounts(): Promise<void> {
               {{ allChromeProfilesSelected ? t('accounts.deselectAll') : t('accounts.selectAll') }}
             </button>
           </div>
-          <div v-if="chromeProfiles.length > 0" class="max-h-[50vh] space-y-2 overflow-auto">
+          <div v-if="chromeVisibleProfiles.length > 0" class="max-h-[40vh] space-y-2 overflow-auto">
             <label
-              v-for="profile in chromeProfiles"
+              v-for="profile in chromeVisibleProfiles"
               :key="profile.id"
               class="flex cursor-pointer items-start gap-3 rounded border border-line bg-canvas p-3 transition hover:border-gray-600"
+              :class="{ 'opacity-50': !isChromeProfileEligible(profile) }"
             >
               <input
-                v-model="selectedChromeProfiles"
                 class="mt-1 h-4 w-4 shrink-0 accent-blue-600"
-                type="checkbox"
-                :value="profile.id"
+                :type="chromeRebindAccountID ? 'radio' : 'checkbox'"
+                :name="chromeRebindAccountID ? 'chrome-rebind-source' : undefined"
+                :disabled="pendingAction !== '' || !isChromeProfileEligible(profile)"
+                :checked="selectedChromeProfiles.includes(profile.id)"
+                @change="toggleChromeProfile(profile)"
               />
               <span class="min-w-0 flex-1">
                 <strong
@@ -728,9 +887,32 @@ async function refreshAllAccounts(): Promise<void> {
                   class="block truncate font-mono text-xs text-gray-500"
                   >{{ profile.profile }}</span
                 >
+                <span v-if="profile.token_format" class="block font-mono text-xs text-gray-400">{{
+                  profile.token_format
+                }}</span>
+                <span v-if="profile.reason" class="block break-words text-xs text-yellow-400">{{
+                  profile.reason
+                }}</span>
+                <span
+                  v-else-if="profile.existing_account_id && !chromeRebindAccountID"
+                  class="block text-xs text-yellow-400"
+                  >{{ t('accounts.chromeExisting') }}</span
+                >
               </span>
             </label>
           </div>
+          <label
+            v-if="chromeRebindAccountID && chromeEligibleProfiles.length > 0"
+            class="mt-4 flex items-start gap-2 text-xs text-yellow-300"
+          >
+            <input
+              v-model="chromeRebindConfirmed"
+              type="checkbox"
+              class="mt-0.5"
+              :disabled="pendingAction !== '' || selectedChromeProfiles.length !== 1"
+            />
+            <span>{{ t('accounts.chromeRebindConfirm') }}</span>
+          </label>
           <div class="mt-6 flex gap-2">
             <button
               class="flex-1 rounded bg-raised py-2 text-sm text-gray-300 transition hover:bg-line disabled:opacity-50"
@@ -743,10 +925,10 @@ async function refreshAllAccounts(): Promise<void> {
             <button
               class="flex-1 rounded bg-blue-600 py-2 text-sm text-white transition hover:bg-blue-500 disabled:opacity-50"
               type="submit"
-              :disabled="pendingAction !== '' || selectedChromeProfiles.length === 0"
+              :disabled="!chromeCanImport"
               :aria-busy="pendingAction === 'chrome-import'"
             >
-              {{ t('accounts.importSelected') }}
+              {{ t(chromeRebindAccountID ? 'accounts.chromeRebind' : 'accounts.importSelected') }}
             </button>
           </div>
         </form>

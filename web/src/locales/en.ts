@@ -13,9 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': 'Console password',
   'settings.keepPassword': 'Leave blank to keep the current password',
   'settings.buildNative': 'Prefer Build for non-streaming requests',
-  'settings.antiTruncationSystemPrompt': "Append anti-truncation system instruction",
+  'settings.antiTruncationSystemPrompt': 'Append anti-truncation system instruction',
   'settings.antiTruncationSystemPromptHelp':
-    "Append the fixed system instruction only for tool anti-truncation variants. Turning this off keeps the tool schema, required tool choice and text projection; it does not remove instructions from the original system or history. Enabled by default.",
+    'Append the fixed system instruction only for tool anti-truncation variants. Turning this off keeps the tool schema, required tool choice and text projection; it does not remove instructions from the original system or history. Enabled by default.',
   'app.title': 'AI Studio Console',
   'app.console': 'Console',
   'app.gateway': 'Protocol gateway',
@@ -81,6 +81,23 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.browserLogin': 'Sign in with browser',
   'accounts.importChrome': 'Import Chrome accounts',
   'accounts.chromeTitle': 'Select Chrome accounts',
+  'accounts.chromeRootCustom': 'Dedicated Chrome instance',
+  'accounts.chromeRootDefault': 'Default Chrome (explicit selection)',
+  'accounts.chromeRootLabel': 'User Data root',
+  'accounts.chromeDiscover': 'Read selected directory',
+  'accounts.chromeSourceHint':
+    'Only the selected directory is read. Exit that Chrome normally first. Profiles are not moved.',
+  'accounts.chromeRootRequired':
+    'Enter an absolute User Data directory for the dedicated instance.',
+  'accounts.chromeSourceUnsupported':
+    'The server did not provide the Chrome source contract. Deploy the matching version.',
+  'accounts.chromeRebind': 'Bind Chrome source',
+  'accounts.chromeRebindConfirm':
+    'Confirm source rebinding only; keep this account’s proxy, settings and usage',
+  'accounts.chromeRebindComplete': 'Chrome source rebound',
+  'accounts.chromeExisting': 'Account already exists; use its Bind Chrome source action',
+  'accounts.chromeChooseRoot':
+    'Choose a directory and read its accounts before selecting identities.',
   'accounts.chromeEmpty': 'No Chrome accounts are available to import',
   'accounts.importSelected': 'Import selected',
   'accounts.selectAll': 'Select all',

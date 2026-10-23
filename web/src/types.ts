@@ -56,6 +56,11 @@ export interface ChromeImportProfile {
   display_name: string
   email: string
   locale: string
+  chrome_root: string
+  importable: boolean
+  token_format?: string
+  reason?: string
+  existing_account_id?: string
 }
 
 export interface PairingToken {
@@ -63,8 +68,11 @@ export interface PairingToken {
   expires_at: string
 }
 
-export interface ChromeImportInput extends AccountLoginInput {
+export interface ChromeImportInput extends Partial<AccountLoginInput> {
   account_ids: string[]
+  chrome_root: string
+  rebind_account_id?: string
+  confirm_rebind?: boolean
 }
 
 export interface AccountCounters {

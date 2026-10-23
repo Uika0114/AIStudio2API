@@ -13,9 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': '콘솔 비밀번호',
   'settings.keepPassword': '비워 두면 현재 비밀번호가 유지됩니다',
   'settings.buildNative': '스트리밍이 아닌 요청에 Build 우선 사용',
-  'settings.antiTruncationSystemPrompt': "잘림 방지 시스템 지침 추가",
+  'settings.antiTruncationSystemPrompt': '잘림 방지 시스템 지침 추가',
   'settings.antiTruncationSystemPromptHelp':
-    "도구 기반 잘림 방지 모델에만 고정 system 지침을 추가합니다. 꺼도 도구 정의, 필수 도구 선택과 본문 추출은 유지되며 원래 system이나 기록의 지침은 삭제하지 않습니다. 기본값은 켜짐입니다.",
+    '도구 기반 잘림 방지 모델에만 고정 system 지침을 추가합니다. 꺼도 도구 정의, 필수 도구 선택과 본문 추출은 유지되며 원래 system이나 기록의 지침은 삭제하지 않습니다. 기본값은 켜짐입니다.',
   'app.title': 'AI Studio 콘솔',
   'app.console': '콘솔',
   'app.gateway': '프로토콜 게이트웨이',
@@ -80,6 +80,21 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.browserLogin': '브라우저로 로그인',
   'accounts.importChrome': 'Chrome에서 일괄 가져오기',
   'accounts.chromeTitle': 'Chrome 계정 선택',
+  'accounts.chromeRootCustom': '전용 Chrome 인스턴스',
+  'accounts.chromeRootDefault': '기본 Chrome (명시적 선택)',
+  'accounts.chromeRootLabel': 'User Data 루트',
+  'accounts.chromeDiscover': '선택한 디렉터리 읽기',
+  'accounts.chromeSourceHint':
+    '선택한 디렉터리만 읽습니다. 먼저 해당 Chrome을 정상 종료하세요. Profile은 이동하지 않습니다.',
+  'accounts.chromeRootRequired': '전용 인스턴스의 User Data 절대 경로를 입력하세요.',
+  'accounts.chromeSourceUnsupported':
+    '서버가 Chrome 소스 계약을 제공하지 않습니다. 호환 버전을 배포하세요.',
+  'accounts.chromeRebind': 'Chrome 소스 연결',
+  'accounts.chromeRebindConfirm':
+    '이 계정의 소스만 다시 연결하고 기존 프록시, 설정 및 사용량을 유지함을 확인',
+  'accounts.chromeRebindComplete': 'Chrome 소스를 다시 연결했습니다',
+  'accounts.chromeExisting': '기존 계정의 Chrome 소스 연결 기능을 사용하세요',
+  'accounts.chromeChooseRoot': '디렉터리를 선택하고 계정을 읽은 다음 가져올 대상을 선택하세요.',
   'accounts.chromeEmpty': '가져올 수 있는 Chrome 계정이 없습니다',
   'accounts.importSelected': '선택한 계정 가져오기',
   'accounts.selectAll': '모두 선택',

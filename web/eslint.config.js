@@ -26,5 +26,10 @@ export default tseslint.config(
       'vue/no-v-html': 'off',
     },
   },
+  {
+    files: ['scripts/verify-chrome-source.cjs'],
+    languageOptions: { globals: globals.node, sourceType: 'commonjs' },
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
+  },
   eslintConfigPrettier,
 )

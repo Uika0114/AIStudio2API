@@ -13,9 +13,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.adminPassword': 'コンソールのパスワード',
   'settings.keepPassword': '空欄のままにすると現在のパスワードを維持します',
   'settings.buildNative': 'ストリーミング以外のリクエストで Build を優先する',
-  'settings.antiTruncationSystemPrompt': "途切れ防止のシステム指示を追加",
+  'settings.antiTruncationSystemPrompt': '途切れ防止のシステム指示を追加',
   'settings.antiTruncationSystemPromptHelp':
-    "ツールによる途切れ防止のバリアントにのみ固定の system 指示を追加します。無効にしてもツール定義、必須ツール選択、本文の復元は維持され、元の system や履歴の指示は削除されません。既定は有効です。",
+    'ツールによる途切れ防止のバリアントにのみ固定の system 指示を追加します。無効にしてもツール定義、必須ツール選択、本文の復元は維持され、元の system や履歴の指示は削除されません。既定は有効です。',
   'app.title': 'AI Studio コンソール',
   'app.console': 'コンソール',
   'app.gateway': 'プロトコル ゲートウェイ',
@@ -82,6 +82,21 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.browserLogin': 'ブラウザでログイン',
   'accounts.importChrome': 'Chrome から一括インポート',
   'accounts.chromeTitle': 'Chrome のアカウントを選択',
+  'accounts.chromeRootCustom': '専用の Chrome インスタンス',
+  'accounts.chromeRootDefault': '既定の Chrome（明示的に選択）',
+  'accounts.chromeRootLabel': 'User Data のルート',
+  'accounts.chromeDiscover': '選択したディレクトリを読み取る',
+  'accounts.chromeSourceHint':
+    '選択したディレクトリのみ読み取ります。対象の Chrome を正常終了してください。Profile は移動しません。',
+  'accounts.chromeRootRequired': '専用インスタンスの User Data の絶対パスを入力してください。',
+  'accounts.chromeSourceUnsupported':
+    'サーバーが Chrome のソース仕様に対応していません。対応バージョンを配置してください。',
+  'accounts.chromeRebind': 'Chrome ソースを紐付け',
+  'accounts.chromeRebindConfirm':
+    'このアカウントのソースのみ変更し、プロキシ・設定・使用量を維持することを確認',
+  'accounts.chromeRebindComplete': 'Chrome ソースを再紐付けしました',
+  'accounts.chromeExisting': '既存アカウントの「Chrome ソースを紐付け」を使用してください',
+  'accounts.chromeChooseRoot': 'ディレクトリを選んでアカウントを読み取り、対象を選択してください。',
   'accounts.chromeEmpty': 'インポートできる Chrome のアカウントがありません',
   'accounts.importSelected': '選択したアカウントをインポート',
   'accounts.selectAll': 'すべて選択',

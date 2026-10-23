@@ -48,9 +48,11 @@ type StorageState struct {
 
 // AuthSource 记录认证状态的来源
 type AuthSource struct {
-	Browser string `json:"browser"`
-	Profile string `json:"profile,omitempty"`
-	Email   string `json:"email,omitempty"`
+	Browser    string `json:"browser"`
+	Profile    string `json:"profile,omitempty"`
+	Email      string `json:"email,omitempty"`
+	ChromeRoot string `json:"chrome_root,omitempty"`
+	GaiaID     string `json:"gaia_id,omitempty"`
 }
 
 // ChromeOAuthMaterial 保存 Chrome DBSC 续签材料

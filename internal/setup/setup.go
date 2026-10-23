@@ -418,6 +418,13 @@ func parseSetupFlags(args []string, cfg config.Config) (setupOptions, error) {
 	if options.login && chromeSelection {
 		return setupOptions{}, fmt.Errorf("--login 不能与 Chrome 导入参数同时使用")
 	}
+	if options.chromeRoot != "" {
+		root, err := chromeauth.NormalizeChromeRoot(options.chromeRoot)
+		if err != nil {
+			return setupOptions{}, err
+		}
+		options.chromeRoot = root
+	}
 	if options.locale == "" || options.timezone == "" {
 		return setupOptions{}, fmt.Errorf("locale 和 timezone 不能为空")
 	}

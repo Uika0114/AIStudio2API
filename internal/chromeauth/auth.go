@@ -27,15 +27,19 @@ type Account struct {
 	Email       string `json:"email"`
 	Locale      string `json:"locale"`
 	Importable  bool   `json:"importable"`
+	ChromeRoot  string `json:"chrome_root"`
+	TokenFormat string `json:"token_format,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // ImportOptions 保存 Chrome 批量导入参数
 type ImportOptions struct {
-	AccountIDs []string
-	ChromeRoot string
-	Proxy      string
-	Profiles   []string
-	Emails     []string
+	AccountIDs  []string
+	ChromeRoot  string
+	Proxy       string
+	Profiles    []string
+	Emails      []string
+	ExactSource *aistudio.AuthSource
 }
 
 // ImportResult 返回一个已验证前的账号状态
@@ -55,7 +59,14 @@ func DefaultChromeRoot() (string, error) {
 
 // Discover 只读列出本机 Chrome Google 账号
 func Discover(chromeRoot string) ([]Account, error) {
-	return discoverPlatform(chromeRoot)
+	if err := ensurePlatformImport(); err != nil {
+		return nil, err
+	}
+	root, err := NormalizeChromeRoot(chromeRoot)
+	if err != nil {
+		return nil, err
+	}
+	return discoverPlatform(root)
 }
 
 // Import 通过设备绑定 OAuth 材料生成 Playwright storage state
@@ -63,34 +74,7 @@ func Import(ctx context.Context, options ImportOptions) ([]ImportResult, error) 
 	if err := ensurePlatformImport(); err != nil {
 		return nil, err
 	}
-	proxyURL, err := validateProxy(options.Proxy)
-	if err != nil {
-		return nil, err
-	}
-	accounts, err := Discover(options.ChromeRoot)
-	if err != nil {
-		return nil, err
-	}
-	selected, err := selectAccounts(accounts, options.Profiles, options.Emails, options.AccountIDs)
-	if err != nil {
-		return nil, err
-	}
-	masterKey, err := retrieveV20Key(options.ChromeRoot)
-	if err != nil {
-		return nil, err
-	}
-	if len(masterKey) != 32 {
-		return nil, fmt.Errorf("Chrome v20 主密钥长度异常")
-	}
-	results := make([]ImportResult, 0, len(selected))
-	for _, account := range selected {
-		result, err := importAccount(ctx, options.ChromeRoot, proxyURL, account, masterKey)
-		if err != nil {
-			return nil, fmt.Errorf("导入 %s: %w", account.Profile, err)
-		}
-		results = append(results, result)
-	}
-	return results, nil
+	return importWithBackend(ctx, options, nativeImportBackend())
 }
 
 // Refresh 使用保存的设备绑定材料重新签发 Google Cookie
@@ -107,36 +91,6 @@ func Refresh(ctx context.Context, material aistudio.ChromeOAuthMaterial, proxy s
 		return nil, err
 	}
 	return toStorageCookies(cookies), nil
-}
-
-func importAccount(ctx context.Context, chromeRoot string, proxy string, account Account, masterKey []byte) (ImportResult, error) {
-	gaiaID, encryptedToken, wrappedKey, err := readTokenService(chromeRoot, account.Profile, account.GaiaID)
-	if err != nil {
-		return ImportResult{}, err
-	}
-	token, err := decryptV20Token(masterKey, encryptedToken)
-	if err != nil {
-		return ImportResult{}, err
-	}
-	cookies, err := fetchGoogleCookies(ctx, gaiaID, token, wrappedKey, proxy)
-	if err != nil {
-		return ImportResult{}, err
-	}
-	state := aistudio.StorageState{Cookies: toStorageCookies(cookies), Origins: []aistudio.StorageOrigin{}}
-	err = state.SetAuthExtension(aistudio.AuthExtension{
-		Source: aistudio.AuthSource{Browser: "chrome", Profile: account.Profile, Email: strings.ToLower(strings.TrimSpace(account.Email))},
-		OAuth: &aistudio.ChromeOAuthMaterial{
-			GaiaID: gaiaID, RefreshToken: token, WrappedBindingKey: append([]byte(nil), wrappedKey...),
-		},
-	})
-	if err != nil {
-		return ImportResult{}, err
-	}
-	return ImportResult{
-		Profile: account.Profile, DisplayName: account.DisplayName,
-		Email: strings.ToLower(strings.TrimSpace(account.Email)), Locale: account.Locale,
-		CookieCount: len(cookies), State: state,
-	}, nil
 }
 
 func selectAccounts(accounts []Account, profiles []string, emails []string, ids []string) ([]Account, error) {
@@ -168,7 +122,7 @@ func selectAccounts(accounts []Account, profiles []string, emails []string, ids 
 		foundIDs[strings.ToLower(account.ID)] = struct{}{}
 		foundProfiles[profile] = struct{}{}
 		if _, exists := foundEmails[email]; exists {
-			continue
+			return nil, fmt.Errorf("同一邮箱存在多个 Chrome 来源，请精确选择一个")
 		}
 		selected = append(selected, account)
 		foundEmails[email] = struct{}{}
@@ -224,27 +178,38 @@ func validateProxy(value string) (string, error) {
 	}
 }
 
-func decryptV20Token(masterKey []byte, encrypted []byte) (string, error) {
-	if len(encrypted) < 3+12+16 || string(encrypted[:3]) != "v20" {
-		return "", fmt.Errorf("refresh token 密文版本不是 v20")
+func decryptChromeToken(masterKey []byte, encrypted []byte) (string, error) {
+	if _, err := tokenFormat(encrypted); err != nil {
+		return "", err
+	}
+	if len(masterKey) != 32 {
+		return "", fmt.Errorf("Chrome 主密钥长度异常")
 	}
 	block, err := aes.NewCipher(masterKey)
 	if err != nil {
-		return "", fmt.Errorf("创建 AES 解密器: %w", err)
+		return "", fmt.Errorf("创建 AES 解密器失败")
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("创建 GCM 解密器: %w", err)
+		return "", fmt.Errorf("创建 GCM 解密器失败")
 	}
 	plaintext, err := gcm.Open(nil, encrypted[3:15], encrypted[15:], nil)
 	if err != nil {
 		return "", fmt.Errorf("refresh token 解密失败")
 	}
+	defer clear(plaintext)
 	token := string(plaintext)
 	if len(token) != 103 || !strings.HasPrefix(token, "1//0") {
 		return "", fmt.Errorf("refresh token 解密结果格式异常")
 	}
 	return token, nil
+}
+
+func decryptV20Token(masterKey []byte, encrypted []byte) (string, error) {
+	if format, err := tokenFormat(encrypted); err != nil || format != "v20" {
+		return "", fmt.Errorf("refresh token 密文版本不是 v20")
+	}
+	return decryptChromeToken(masterKey, encrypted)
 }
 
 func toStorageCookies(cookies []multiloginCookie) []aistudio.StateCookie {
