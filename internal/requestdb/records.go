@@ -19,7 +19,7 @@ import (
 const recordColumns = `r.id, r.time, r.protocol, r.path, r.model, r.account, r.channel, r.status, r.state,
  r.duration_ms, r.first_event_ms, r.queue_ms, r.input_tokens, r.cached_tokens, r.reasoning_tokens, r.reply_tokens, r.total_tokens,
  r.tool_calls, r.error, r.attempts, EXISTS(SELECT 1 FROM bodies b WHERE b.id = r.id),
- m.requested_model, m.base_model, m.requested_channel, m.anti_truncation, m.usage_known, m.usage_source, m.attempt_count, m.sent_attempt_count`
+ m.requested_model, m.base_model, m.requested_channel, m.anti_truncation, m.usage_known, m.usage_source, m.attempt_count, m.sent_attempt_count, m.anti_observations`
 
 const recordTables = ` FROM requests r LEFT JOIN request_metadata m ON m.id = r.id`
 
@@ -45,12 +45,12 @@ func scanRecord(rows *sql.Rows) (api.UsageRecord, error) {
 	var record api.UsageRecord
 	var at int64
 	var attempts string
-	var requestedModel, baseModel, usageSource sql.NullString
+	var requestedModel, baseModel, usageSource, observations sql.NullString
 	err := rows.Scan(&record.ID, &at, &record.Protocol, &record.Path, &record.Model, &record.Account, &record.Channel,
 		&record.Status, &record.State, &record.DurationMS, &record.FirstEventMS, &record.QueueMS, &record.InputTokens, &record.CachedTokens,
 		&record.ReasoningTokens, &record.ReplyTokens, &record.TotalTokens, &record.ToolCalls, &record.Error, &attempts, &record.HasBody,
 		&requestedModel, &baseModel, &record.RequestedChannel, &record.AntiTruncation, &record.UsageKnown, &usageSource,
-		&record.AttemptCount, &record.SentAttemptCount)
+		&record.AttemptCount, &record.SentAttemptCount, &observations)
 	if err != nil {
 		return record, err
 	}
@@ -63,6 +63,11 @@ func scanRecord(rows *sql.Rows) (api.UsageRecord, error) {
 	}
 	if err := json.Unmarshal([]byte(attempts), &record.Attempts); err != nil {
 		return record, err
+	}
+	if observations.Valid {
+		if err := json.Unmarshal([]byte(observations.String), &record.AntiObservations); err != nil {
+			return record, err
+		}
 	}
 	return record, nil
 }
@@ -102,7 +107,7 @@ func (store *Store) Records(ctx context.Context, query api.UsageRecordQuery) (ap
 var csvHeader = []string{
 	"time", "id", "protocol", "path", "model", "account", "channel", "status", "state", "duration_ms", "first_event_ms",
 	"queue_ms", "input_tokens", "cached_tokens", "reasoning_tokens", "reply_tokens", "total_tokens", "tool_calls", "error", "attempts",
-	"requested_model", "base_model", "requested_channel", "anti_truncation", "usage_known", "usage_source", "attempt_count", "sent_attempt_count",
+	"requested_model", "base_model", "requested_channel", "anti_truncation", "usage_known", "usage_source", "attempt_count", "sent_attempt_count", "anti_observations",
 }
 
 // csvText 为可能被电子表格当作公式的文本加单引号前缀
@@ -152,6 +157,14 @@ func (store *Store) ExportRecords(ctx context.Context, query api.UsageRecordQuer
 		if err != nil {
 			return errors.Join(err, rows.Close())
 		}
+		observations := ""
+		if record.AntiObservations != nil {
+			encoded, err := json.Marshal(record.AntiObservations)
+			if err != nil {
+				return errors.Join(err, rows.Close())
+			}
+			observations = string(encoded)
+		}
 		integer := func(value int64) string { return strconv.FormatInt(value, 10) }
 		if err := writer.Write([]string{
 			record.Time.Format(time.RFC3339Nano), record.ID, record.Protocol, csvText(record.Path), csvText(record.Model),
@@ -159,7 +172,7 @@ func (store *Store) ExportRecords(ctx context.Context, query api.UsageRecordQuer
 			integer(record.FirstEventMS), integer(record.QueueMS), integer(record.InputTokens), integer(record.CachedTokens), integer(record.ReasoningTokens),
 			integer(record.ReplyTokens), integer(record.TotalTokens), strconv.Itoa(record.ToolCalls), csvText(record.Error), string(attempts),
 			csvText(record.RequestedModel), csvText(record.BaseModel), csvRequestedChannel(record.RequestedChannel), csvOptional(record.AntiTruncation),
-			csvOptional(record.UsageKnown), csvText(record.UsageSource), csvOptional(record.AttemptCount), csvOptional(record.SentAttemptCount),
+			csvOptional(record.UsageKnown), csvText(record.UsageSource), csvOptional(record.AttemptCount), csvOptional(record.SentAttemptCount), observations,
 		}); err != nil {
 			return errors.Join(err, rows.Close())
 		}

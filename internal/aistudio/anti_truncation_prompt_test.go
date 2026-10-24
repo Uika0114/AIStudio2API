@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -30,7 +31,7 @@ func TestAntiTruncationSystemPromptOnlyChangesSystem(t *testing.T) {
 					t.Fatal("disabled append changed caller system")
 				}
 				if on.System != appendSystemInstruction(system, fmt.Sprintf(antiTruncationSystemInstruction, onTransport.Name())) {
-					t.Fatal("legacy prompt changed")
+					t.Fatal("unified prompt append changed")
 				}
 				if onTransport.Name() != offTransport.Name() {
 					t.Fatal("toggle changed collision handling")
@@ -74,6 +75,15 @@ func TestAntiTruncationSystemPromptClientPipeline(t *testing.T) {
 						}
 						client.catalogs = old.catalogs
 						fixture.client = client
+						var observation AntiTruncationObservation
+						var mu sync.Mutex
+						fixture.ctx = ContextWithAntiTruncationObserver(fixture.ctx, func(v AntiTruncationObservation) {
+							mu.Lock()
+							defer mu.Unlock()
+							if v.Revision > observation.Revision {
+								observation = v
+							}
+						})
 						fixture.reply = func(request GenerateRequest, rpc RPCRequest, _ int) ([]byte, error) {
 							const caller = "caller-system-sentinel"
 							want := caller
@@ -87,10 +97,10 @@ func TestAntiTruncationSystemPromptClientPipeline(t *testing.T) {
 							if !bytes.Contains(rpc.Body, []byte(caller)) {
 								t.Fatal("caller system missing on wire")
 							}
-							if bytes.Contains(rpc.Body, []byte("Honor the caller requirements")) != (anti && !disabled) {
+							if bytes.Contains(rpc.Body, []byte("in place of ordinary assistant Text output")) != (anti && !disabled) {
 								t.Fatal("wire append policy wrong")
 							}
-							if bytes.Contains(rpc.Body, []byte("Every user-facing reply MUST")) != anti {
+							if bytes.Contains(rpc.Body, []byte("This function replaces ordinary assistant Text output")) != anti {
 								t.Fatal("new reply schema missing on wire or leaked into plain route")
 							}
 							parts := []Part{{Text: "fixture answer"}}
@@ -111,6 +121,15 @@ func TestAntiTruncationSystemPromptClientPipeline(t *testing.T) {
 						}
 						model += "fixture-model"
 						events := fixture.generate(t, GenerateRequest{Model: model, System: "caller-system-sentinel", Unary: unary})
+						mu.Lock()
+						observed := observation.Clone()
+						mu.Unlock()
+						if anti && (observed.Version != 1 || observed.Behavior != "unified-reply-v2" || observed.SystemPrompt == disabled || !observed.Complete) {
+							t.Fatalf("effective immutable client policy wrong: %+v", observed)
+						}
+						if !anti && observed.ID != "" {
+							t.Fatal("plain generation created anti observation")
+						}
 						if pipelineError(events) != nil || pipelineFinish(events) == nil || pipelineText(events) != "fixture answer" {
 							t.Fatalf("pipeline failed: %+v", events)
 						}

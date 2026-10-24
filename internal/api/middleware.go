@@ -52,6 +52,7 @@ type accessLogMetadata struct {
 	proof           time.Duration
 	attempts        []RequestAttempt
 	attemptIndex    map[string]int
+	antiIndex       map[string]int
 	ledger          RequestLedgerMetadata
 	authorized      bool
 }
@@ -344,6 +345,9 @@ func SetAccessLogModelSelection(ctx context.Context, selection aistudio.ModelSel
 		channel := string(selection.Channel)
 		metadata.ledger.RequestedChannel = &channel
 		metadata.ledger.AntiTruncation = cloneLedgerValue(&selection.AntiTruncation)
+		if selection.AntiTruncation && metadata.ledger.AntiObservations == nil {
+			metadata.ledger.AntiObservations = []aistudio.AntiTruncationObservation{}
+		}
 		if selection.BaseModel != "" {
 			metadata.model = selection.BaseModel
 		}
@@ -416,6 +420,72 @@ func AddAccessLogGenerationAttempt(ctx context.Context, attempt aistudio.Generat
 		}
 	}
 	metadata.ledger.AttemptCount, metadata.ledger.SentAttemptCount = &count, &sent
+}
+
+// AddAccessLogAntiObservation updates a transport lifetime, not a physical send.
+// A root snapshot may precede cancellation cleanup; unfinished coverage stays unknown.
+func AddAccessLogAntiObservation(ctx context.Context, value aistudio.AntiTruncationObservation) {
+	metadata, ok := ctx.Value(accessLogContextKey{}).(*accessLogMetadata)
+	if !ok || value.ID == "" {
+		return
+	}
+	metadata.mu.Lock()
+	defer metadata.mu.Unlock()
+	if value.ParentID != "" && value.ParentID != metadata.requestID {
+		return
+	}
+	value = value.Clone()
+	value.ParentID = metadata.requestID
+	if metadata.antiIndex == nil {
+		metadata.antiIndex = make(map[string]int)
+	}
+	if i, exists := metadata.antiIndex[value.ID]; exists {
+		previous := metadata.ledger.AntiObservations[i]
+		if value.Revision <= previous.Revision || value.RequestID != previous.RequestID || value.Purpose != previous.Purpose {
+			return
+		}
+		if value.Version != previous.Version || value.Behavior != previous.Behavior || value.SystemPrompt != previous.SystemPrompt {
+			return
+		}
+		value.Injected = value.Injected || previous.Injected
+		value.Sent = value.Sent || previous.Sent
+		for _, old := range previous.Rounds {
+			i := 0
+			for i < len(value.Rounds) && value.Rounds[i].AttemptID != old.AttemptID {
+				i++
+			}
+			if i == len(value.Rounds) {
+				value.Rounds = append(value.Rounds, old)
+				value.Complete = false
+				continue
+			}
+			r := &value.Rounds[i]
+			r.Calls = max(r.Calls, old.Calls)
+			r.Legal = max(r.Legal, old.Legal)
+			r.Empty = max(r.Empty, old.Empty)
+			r.Invalid = max(r.Invalid, old.Invalid)
+			r.Rejected = max(r.Rejected, old.Rejected)
+			r.RealTools = max(r.RealTools, old.RealTools)
+			r.Sent = r.Sent || old.Sent
+			r.Response = r.Response || old.Response
+			r.Fallback = r.Fallback || old.Fallback
+			r.OrdinaryText = r.OrdinaryText || old.OrdinaryText
+			r.OtherOutput = r.OtherOutput || old.OtherOutput
+			if r.FinishReason == "" {
+				r.FinishReason = old.FinishReason
+			}
+			if r.Status == 0 {
+				r.Status = old.Status
+			}
+			if r.RejectReason == "" {
+				r.RejectReason = old.RejectReason
+			}
+		}
+		metadata.ledger.AntiObservations[i] = value
+	} else {
+		metadata.antiIndex[value.ID] = len(metadata.ledger.AntiObservations)
+		metadata.ledger.AntiObservations = append(metadata.ledger.AntiObservations, value)
+	}
 }
 
 // AddAccessLogProof 累计请求等待并生成 WAA proof 的时间

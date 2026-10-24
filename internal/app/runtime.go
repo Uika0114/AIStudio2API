@@ -3329,13 +3329,7 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 	for _, account := range service.pool.Status() {
 		labels[account.ID] = account.Label
 	}
-	requestCtx = aistudio.ContextWithGenerationAttemptObserver(requestCtx, func(attempt aistudio.GenerationAttempt) {
-		label := labels[attempt.AccountID]
-		if label == "" {
-			label = attempt.AccountID
-		}
-		api.AddAccessLogGenerationAttempt(requestCtx, attempt, label)
-	})
+	requestCtx = observeGenerationMetadata(requestCtx, labels)
 	service.requests.start(request, cancel)
 	resourceID, err := service.pool.ResourceIDForContents(requestCtx, request.Contents)
 	if err != nil {
@@ -3347,6 +3341,20 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 	events := make(chan aistudio.Event, 8)
 	go service.generateWithRetry(ctx, requestCtx, cancel, generationStartedAt, request, resourceID, events)
 	return events, nil
+}
+
+// observeGenerationMetadata binds both independent producers to the same HTTP root.
+func observeGenerationMetadata(ctx context.Context, labels map[string]string) context.Context {
+	ctx = aistudio.ContextWithGenerationAttemptObserver(ctx, func(attempt aistudio.GenerationAttempt) {
+		label := labels[attempt.AccountID]
+		if label == "" {
+			label = attempt.AccountID
+		}
+		api.AddAccessLogGenerationAttempt(ctx, attempt, label)
+	})
+	return aistudio.ContextWithAntiTruncationObserver(ctx, func(value aistudio.AntiTruncationObservation) {
+		api.AddAccessLogAntiObservation(ctx, value)
+	})
 }
 
 // generateTimeout does not borrow Playground continuation multipliers for a

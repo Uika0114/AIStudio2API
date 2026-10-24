@@ -24,6 +24,7 @@ type physicalAttempt struct {
 	value    GenerationAttempt
 	channel  Channel
 	terminal bool
+	anti     *antiObservation
 }
 
 func generationRPCChannel(method string) Channel {
@@ -38,7 +39,8 @@ func generationRPCChannel(method string) Channel {
 
 func beginPhysicalAttempt(ctx context.Context, request GenerateRequest, rpc RPCRequest) (context.Context, *physicalAttempt) {
 	observer, _ := ctx.Value(generationAttemptObserverKey{}).(func(GenerationAttempt))
-	if observer == nil {
+	anti, _ := ctx.Value(antiObservationKey{}).(*antiObservation)
+	if observer == nil && anti == nil {
 		return ctx, nil
 	}
 	now := time.Now()
@@ -65,7 +67,7 @@ func beginPhysicalAttempt(ctx context.Context, request GenerateRequest, rpc RPCR
 	if lease, ok := AccountLeaseFromContext(ctx); ok {
 		accountID = lease.Account().ID
 	}
-	attempt := &physicalAttempt{ctx: ctx, channel: generationRPCChannel(rpc.Method), value: GenerationAttempt{
+	attempt := &physicalAttempt{ctx: ctx, anti: anti, channel: generationRPCChannel(rpc.Method), value: GenerationAttempt{
 		ID: fmt.Sprintf("%s/attempt-%d", request.ID, generationAttemptSequence.Add(1)), RequestID: request.ID,
 		RequestedModel: requested, BaseModel: base, RequestedChannel: request.Selection.Channel,
 		AntiTruncation: request.Selection.AntiTruncation, AccountID: accountID, Method: rpc.Method, Mode: mode,
@@ -89,6 +91,7 @@ func (attempt *physicalAttempt) update(change func(*GenerationAttempt)) {
 		snapshot.Usage = &copied
 	}
 	attempt.mu.Unlock()
+	attempt.anti.attempt(snapshot)
 	reportGenerationAttempt(attempt.ctx, snapshot)
 }
 
@@ -167,6 +170,7 @@ func (attempt *physicalAttempt) observe(event Event) {
 	if attempt == nil {
 		return
 	}
+	attempt.anti.raw(attempt.value.ID, event)
 	switch event.Kind {
 	case EventUsage:
 		if event.Usage != nil {
@@ -190,6 +194,7 @@ func (attempt *physicalAttempt) decoded(err error, continued bool) {
 	if attempt == nil {
 		return
 	}
+	attempt.anti.decoded(attempt.value.ID, err, continued)
 	if errors.Is(err, errStopSequenceMatched) {
 		attempt.update(func(value *GenerationAttempt) {
 			if !attempt.terminal {

@@ -28,10 +28,10 @@ import (
 const antiTruncationTransportBaseName = "aistudio2api_emit_v1"
 
 // antiTruncationTransportDescription 是运输函数声明的固定说明，不随请求变化。
-const antiTruncationTransportDescription = "Submit the complete user-facing reply for the current interaction. Every user-facing reply MUST be submitted through this function, including answers, clarification questions, confirmations, refusals, and progress updates. Final means the reply for this interaction, not completion of the overall task. The content is displayed verbatim to the user. Use exactly one call for that reply and at most one call per model response. Submission cannot delete, replace, retract, or revise any previously emitted text. This function only delivers text and performs no external action. Continue to use real tools when needed; a response containing only real tool calls needs no reply submission, and this function cannot satisfy a required real tool call."
+const antiTruncationTransportDescription = "This function replaces ordinary assistant Text output for the current model response. If you produce any user-visible reply, you MUST put the complete reply in content and call this function exactly once, instead of emitting ordinary reply text. The gateway extracts content and returns it verbatim as the assistant's visible reply; the internal function call is hidden and is not executed by the client. Replies include answers, clarifications, confirmations, refusals, and progress updates; the overall task need not be complete. This transport cannot edit already displayed messages and performs no external action. Call real tools directly when needed; this function cannot satisfy a required real-tool call. A response containing only real-tool calls and no user-visible reply needs no submission."
 
 // antiTruncationSystemInstruction 是注入的固定控制提示模板，只有函数名随避碰结果变化。
-const antiTruncationSystemInstruction = "Honor the caller requirements for real tools first; the internal transport cannot satisfy a required real tool call. When a final answer is appropriate, deliver its complete text by calling the internal function %q exactly once, placing the full final answer in its \"content\" string argument. That function only transports text and performs no external action; do not use it for any other purpose and do not call it more than once."
+const antiTruncationSystemInstruction = "Use %s in place of ordinary assistant Text output. Any user-visible reply in this model response MUST be submitted exactly once in content; the gateway displays that content as the assistant's reply and hides the internal call. Do not also emit ordinary reply text. Follow the caller's real-tool requirements; a response containing only real-tool calls and no user-visible reply needs no transport submission."
 
 // antiTruncationTextBufferLimit 是普通正文的有界暂存上限；超过即显式报错，不截断后假成功。
 const antiTruncationTextBufferLimit = 4 << 20
@@ -42,6 +42,7 @@ var (
 	errAntiTruncationMissingContent   = errors.New("抗截断运输调用缺少 content")
 	errAntiTruncationContentType      = errors.New("抗截断运输调用 content 必须是字符串")
 	errAntiTruncationDuplicateContent = errors.New("抗截断运输调用包含重复 content")
+	errAntiTruncationExtraField       = errors.New("抗截断运输调用包含额外字段")
 	errAntiTruncationTrailing         = errors.New("抗截断运输调用参数包含多余内容")
 	errAntiTruncationDuplicateCall    = errors.New("同一候选重复出现抗截断运输调用")
 	errAntiTruncationTextAfterCall    = errors.New("抗截断运输正文之后又出现普通正文")
@@ -62,10 +63,11 @@ type AntiTruncationTransport struct {
 	buffer      strings.Builder
 	bufferModel string
 
-	hit      bool
-	terminal bool
-	closed   bool
-	closeErr error
+	hit         bool
+	terminal    bool
+	closed      bool
+	closeErr    error
+	observation *antiObservation
 }
 
 // Name 返回本次注入的运输函数名，供调用方日志与合同审计使用。
@@ -176,6 +178,9 @@ func (transport *AntiTruncationTransport) Project(event Event) ([]Event, error) 
 		if event.Kind == EventUsage {
 			return []Event{event}, nil
 		}
+		if event.Kind == EventToolCall && event.ToolCall != nil && event.ToolCall.Name == transport.name {
+			transport.observation.projected("after_terminal")
+		}
 		return nil, fmt.Errorf("%w: %s", errAntiTruncationAfterTerminal, event.Kind)
 	}
 
@@ -242,11 +247,18 @@ func (transport *AntiTruncationTransport) projectToolCall(event Event) ([]Event,
 		return []Event{event}, nil
 	}
 	if transport.hit {
+		transport.observation.projected("duplicate_call")
 		return nil, errAntiTruncationDuplicateCall
 	}
 	content, err := decodeAntiTruncationContent(call.Arguments)
 	if err != nil {
+		transport.observation.projected("invalid")
 		return nil, fmt.Errorf("抗截断运输 %q: %w", transport.name, err)
+	}
+	if content == "" {
+		transport.observation.projected("empty")
+	} else {
+		transport.observation.projected("legal")
 	}
 	transport.hit = true
 	transport.buffer.Reset()
@@ -262,6 +274,7 @@ func (transport *AntiTruncationTransport) flush() *Event {
 	if transport.buffer.Len() == 0 {
 		return nil
 	}
+	transport.observation.projected("fallback")
 	text := transport.buffer.String()
 	transport.buffer.Reset()
 	return &Event{Kind: EventText, Text: text, ProviderModel: transport.bufferModel}
@@ -294,11 +307,7 @@ func decodeAntiTruncationContent(raw json.RawMessage) (string, error) {
 			return "", errAntiTruncationArguments
 		}
 		if key != "content" {
-			var ignored json.RawMessage
-			if err := decoder.Decode(&ignored); err != nil {
-				return "", errAntiTruncationArguments
-			}
-			continue
+			return "", errAntiTruncationExtraField
 		}
 		if seen {
 			return "", errAntiTruncationDuplicateContent
@@ -331,7 +340,7 @@ func antiTruncationTransportDeclaration(name string) FunctionDeclaration {
 	return FunctionDeclaration{
 		Name:        name,
 		Description: antiTruncationTransportDescription,
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"content":{"type":"string","description":"The complete reply to display to the user, exactly as written. Include only the reply itself, not drafts, alternative versions, self-editing commentary, or instructions to change the submitted text. Such instructions would be displayed as ordinary text, not executed."}},"required":["content"]}`),
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"content":{"type":"string","description":"The text that the gateway will display verbatim as the assistant's visible reply, in the requested language and format. Requested drafts, alternatives, comparisons, and revisions may be included together. Do not add an unsolicited second version of the reply."}},"required":["content"],"additionalProperties":false}`),
 	}
 }
 

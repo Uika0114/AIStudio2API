@@ -385,7 +385,7 @@ func (s *server) compactionSummary(ctx context.Context, request responsesRequest
 	generate.Contents = append(generate.Contents, aistudio.Content{Role: aistudio.RoleUser, Parts: []aistudio.Part{{Text: fmt.Sprintf(compactionInstructions, prompt)}}})
 	generate.Tools.ToolConfig.Mode = "none"
 	generate.Unary = true
-	events, err := s.generateWithHistory(ctx, generate)
+	events, err := s.generateWithHistory(aistudio.ContextWithGenerationPurpose(ctx, "compaction"), generate)
 	if err != nil {
 		return "", nil, err
 	}

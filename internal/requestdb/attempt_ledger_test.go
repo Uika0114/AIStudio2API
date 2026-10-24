@@ -414,7 +414,7 @@ func checkAttemptCSV(t *testing.T, data []byte) {
 		t.Fatalf("CSV rows=%d err=%v", len(records), err)
 	}
 	oldHeader := []string{"time", "id", "protocol", "path", "model", "account", "channel", "status", "state", "duration_ms", "first_event_ms", "queue_ms", "input_tokens", "cached_tokens", "reasoning_tokens", "reply_tokens", "total_tokens", "tool_calls", "error", "attempts"}
-	if len(records[0]) != 28 || !reflect.DeepEqual(records[0][:20], oldHeader) {
+	if len(records[0]) != 29 || records[0][28] != "anti_observations" || !reflect.DeepEqual(records[0][:20], oldHeader) {
 		t.Fatalf("legacy CSV columns changed: %v", records[0])
 	}
 	for _, row := range records[1:] {

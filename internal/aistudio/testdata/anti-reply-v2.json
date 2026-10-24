@@ -1,0 +1,15 @@
+{
+  "description": "This function replaces ordinary assistant Text output for the current model response. If you produce any user-visible reply, you MUST put the complete reply in content and call this function exactly once, instead of emitting ordinary reply text. The gateway extracts content and returns it verbatim as the assistant's visible reply; the internal function call is hidden and is not executed by the client. Replies include answers, clarifications, confirmations, refusals, and progress updates; the overall task need not be complete. This transport cannot edit already displayed messages and performs no external action. Call real tools directly when needed; this function cannot satisfy a required real-tool call. A response containing only real-tool calls and no user-visible reply needs no submission.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "description": "The text that the gateway will display verbatim as the assistant's visible reply, in the requested language and format. Requested drafts, alternatives, comparisons, and revisions may be included together. Do not add an unsolicited second version of the reply."
+      }
+    },
+    "required": ["content"],
+    "additionalProperties": false
+  },
+  "system_template": "Use __TRANSPORT_TOOL_NAME__ in place of ordinary assistant Text output. Any user-visible reply in this model response MUST be submitted exactly once in content; the gateway displays that content as the assistant's reply and hides the internal call. Do not also emit ordinary reply text. Follow the caller's real-tool requirements; a response containing only real-tool calls and no user-visible reply needs no transport submission."
+}

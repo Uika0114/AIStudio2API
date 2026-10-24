@@ -143,14 +143,15 @@ type UsageReport struct {
 // SentAttemptCount counts only those that entered the send boundary. Neither
 // includes legacy outer failures, nor claims that observation is exhaustive.
 type RequestLedgerMetadata struct {
-	RequestedModel   string  `json:"requested_model,omitempty"`
-	BaseModel        string  `json:"base_model,omitempty"`
-	RequestedChannel *string `json:"requested_channel"` // empty string is known auto
-	AntiTruncation   *bool   `json:"anti_truncation"`
-	UsageKnown       *bool   `json:"usage_known"`
-	UsageSource      string  `json:"usage_source"`
-	AttemptCount     *int    `json:"attempt_count"`
-	SentAttemptCount *int    `json:"sent_attempt_count"`
+	RequestedModel   string                               `json:"requested_model,omitempty"`
+	BaseModel        string                               `json:"base_model,omitempty"`
+	RequestedChannel *string                              `json:"requested_channel"` // empty string is known auto
+	AntiTruncation   *bool                                `json:"anti_truncation"`
+	UsageKnown       *bool                                `json:"usage_known"`
+	UsageSource      string                               `json:"usage_source"`
+	AttemptCount     *int                                 `json:"attempt_count"`
+	SentAttemptCount *int                                 `json:"sent_attempt_count"`
+	AntiObservations []aistudio.AntiTruncationObservation `json:"anti_observations"`
 }
 
 const (
@@ -251,6 +252,10 @@ func (metadata RequestLedgerMetadata) Clone() RequestLedgerMetadata {
 	metadata.UsageKnown = cloneLedgerValue(metadata.UsageKnown)
 	metadata.AttemptCount = cloneLedgerValue(metadata.AttemptCount)
 	metadata.SentAttemptCount = cloneLedgerValue(metadata.SentAttemptCount)
+	metadata.AntiObservations = slices.Clone(metadata.AntiObservations)
+	for i := range metadata.AntiObservations {
+		metadata.AntiObservations[i] = metadata.AntiObservations[i].Clone()
+	}
 	return metadata
 }
 

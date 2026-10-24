@@ -663,13 +663,19 @@ func validateGenerateEntry(request GenerateRequest, entry modelEntry) error {
 	return nil
 }
 
-func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan Event, error) {
+func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result <-chan Event, resultErr error) {
 	ctx = WithRemoteAuthBudget(ctx)
 	var err error
 	request, err = NormalizeGenerateRequestModel(request)
 	if err != nil {
 		return nil, err
 	}
+	ctx, observation := beginAntiObservation(ctx, request, !c.disableAntiTruncationSystemPrompt)
+	defer func() {
+		if resultErr != nil {
+			observation.finish(resultErr)
+		}
+	}()
 	lease, leased := AccountLeaseFromContext(ctx)
 	actualChannel := ChannelPlayground
 	if leased {
@@ -751,6 +757,8 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 		}
+		transport.observation = observation
+		observation.injected(transport.name)
 	}
 	if request.Truncate && entry.model.InputTokenLimit > 0 {
 		request, err = c.truncateRequest(ctx, request, entry.model.InputTokenLimit)
@@ -790,6 +798,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	go func() {
 		defer close(events)
 		defer cancelTokenCount()
+		defer func() { observation.finish(context.Canceled) }()
 		stopClose := context.AfterFunc(ctx, func() {
 			_ = response.Body.Close()
 		})
@@ -849,6 +858,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		}
 		err := decodeStream(observeStreamActivity(ctx, response.Body), emit)
 		if errors.Is(err, errStopSequenceMatched) {
+			observation.finish(err)
 			_ = response.Body.Close()
 			// The original client contract wraps this entire event channel,
 			// including locally produced stop finishes; hidden text cannot satisfy it.
@@ -896,6 +906,14 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 				}
 			}
 		}
+		observationErr := err
+		if observationErr == nil && ctx.Err() != nil {
+			observationErr = ctx.Err()
+		}
+		if observationErr == nil && finish == nil {
+			observationErr = errAntiTruncationMissingTerminal
+		}
+		observation.finish(observationErr)
 		if err != nil {
 			if ctx.Err() == nil {
 				if usage != nil {
