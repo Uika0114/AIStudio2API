@@ -2,13 +2,16 @@ package authhelper
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type TLSFiles struct {
@@ -116,19 +119,56 @@ func ServerTLS(files TLSFiles) (*tls.Config, error) {
 		return nil, err
 	}
 	value.ClientAuth = tls.RequireAndVerifyClientCert
+	// A cert refresh must affect new handshakes without restarting a helper
+	// that might own an in-flight device-bound authentication operation.
+	value.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		fresh, err := loadTLS(files)
+		if err != nil {
+			return nil, err
+		}
+		fresh.ClientAuth = tls.RequireAndVerifyClientCert
+		return fresh, nil
+	}
 	return value, nil
 }
 func LoadClient(settings ClientSettings) (*Client, error) {
 	if !settings.Enabled {
 		return nil, failure("REMOTE_DISABLED")
 	}
+	value, err := clientTLS(settings)
+	if err != nil {
+		return nil, err
+	}
+	client, err := NewClient(settings.Endpoint, settings.Consumer, value, settings.CookieDomains)
+	if err != nil {
+		return nil, err
+	}
+	transport := client.http.Transport.(*http.Transport)
+	// DialTLSContext retains the standard x509 verification. Reloading only
+	// GetClientCertificate would leave the root pool stale when the CA cert
+	// is renewed. There is deliberately no last-good or unverified fallback.
+	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		fresh, err := clientTLS(settings)
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: fresh}
+		return dialer.DialContext(ctx, network, addr)
+	}
+	return client, nil
+}
+
+func clientTLS(settings ClientSettings) (*tls.Config, error) {
 	value, err := loadTLS(settings.TLS)
 	if err != nil {
 		return nil, err
 	}
-	if len(value.Certificates[0].Leaf.DNSNames) != 1 || value.Certificates[0].Leaf.DNSNames[0] != settings.Consumer {
+	leaf := value.Certificates[0].Leaf
+	if len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != settings.Consumer || len(leaf.URIs) != 0 {
 		return nil, failure("IDENTITY_MISMATCH")
 	}
 	value.ServerName = settings.ServerName
-	return NewClient(settings.Endpoint, settings.Consumer, value, settings.CookieDomains)
+	return value, nil
 }
