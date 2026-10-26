@@ -18,10 +18,12 @@ import (
 // Only the auxiliary/protected RPC transports are synthetic; no HTTP is sent.
 type assistantTextIntegrationService struct {
 	*fakeService
-	pooled *aistudio.PooledService
-	lease  *aistudio.AccountLease
-	mu     sync.Mutex
-	bodies [][]byte
+	pooled     *aistudio.PooledService
+	lease      *aistudio.AccountLease
+	mu         sync.Mutex
+	bodies     [][]byte
+	requests   []aistudio.GenerateRequest
+	auxMethods []string
 }
 
 func (s *assistantTextIntegrationService) Generate(ctx context.Context, r aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
@@ -32,7 +34,13 @@ func (s *assistantTextIntegrationService) Generate(ctx context.Context, r aistud
 }
 func newAssistantTextIntegration(t *testing.T, streamBody ...func(context.Context, []byte) io.ReadCloser) *assistantTextIntegrationService {
 	t.Helper()
+	return newAssistantTextIntegrationForModel(t, "gemini-4-argon", streamBody...)
+}
+
+func newAssistantTextIntegrationForModel(t *testing.T, modelID string, streamBody ...func(context.Context, []byte) io.ReadCloser) *assistantTextIntegrationService {
+	t.Helper()
 	model := routingTestModel()
+	model.ID = modelID
 	model.Capabilities["capability_code_48"] = true
 	account := &aistudio.Account{ID: "fixture-text", Config: aistudio.AccountConfig{Enabled: true}, State: aistudio.AccountReady, Models: []aistudio.Model{model}}
 	pool := aistudio.NewAccountPool([]*aistudio.Account{account}, 1)
@@ -46,7 +54,9 @@ func newAssistantTextIntegration(t *testing.T, streamBody ...func(context.Contex
 			t.Error(err)
 		}
 	})
-	service := &assistantTextIntegrationService{fakeService: &fakeService{models: []aistudio.Model{assistantRoutingModel()}}, lease: lease}
+	publicModel := assistantRoutingModel()
+	publicModel.ID = modelID
+	service := &assistantTextIntegrationService{fakeService: &fakeService{models: []aistudio.Model{publicModel}}, lease: lease}
 	response := func(v any) *aistudio.RPCResponse {
 		body, err := json.Marshal(v)
 		if err != nil {
@@ -55,10 +65,13 @@ func newAssistantTextIntegration(t *testing.T, streamBody ...func(context.Contex
 		return &aistudio.RPCResponse{StatusCode: 200, Header: http.Header{"Content-Type": []string{aistudio.JSONProtobufContentType}}, Body: io.NopCloser(bytes.NewReader(body))}
 	}
 	transport := assistantTextAuxFunc(func(ctx context.Context, r aistudio.RPCRequest) (*aistudio.RPCResponse, error) {
+		service.mu.Lock()
+		service.auxMethods = append(service.auxMethods, r.Method)
+		service.mu.Unlock()
 		switch r.Method {
 		case "ListModels":
 			row := make([]any, 83)
-			row[0] = "models/gemini-4-argon"
+			row[0] = "models/" + modelID
 			row[3] = "fixture model"
 			row[5] = 1048576
 			row[6] = 32768
@@ -73,7 +86,7 @@ func newAssistantTextIntegration(t *testing.T, streamBody ...func(context.Contex
 			step[0] = []any{[]any{[]any{part}, "model"}}
 			step[11] = 1
 			step[12] = 1
-			step[13] = "models/gemini-4-argon"
+			step[13] = "models/" + modelID
 			step[15] = []any{"10", "5", "2"}
 			step[16] = "FIXTURE-GEN"
 			result := response([]any{[]any{[]any{nil, nil, []any{step}, "FIXTURE-APPLET"}}})
@@ -93,11 +106,12 @@ func newAssistantTextIntegration(t *testing.T, streamBody ...func(context.Contex
 		}
 	})
 	client, err := aistudio.NewClient(aistudio.ClientOptions{Transport: transport, Protected: aistudio.ProtectedTransportFunc(func(_ context.Context, r aistudio.GenerateRequest, rpc aistudio.RPCRequest) (*aistudio.RPCResponse, error) {
-		if rpc.Method != "CodeAssistantOffline" || r.Selection.Channel != aistudio.ChannelAssistant || len(r.Tools.Functions) != 0 || r.Tools.ToolConfig.Mode != "" {
+		if rpc.Method != "CodeAssistantOffline" || r.Selection.Channel != aistudio.ChannelAssistant || len(r.Tools.Functions) != 0 || r.Tools.ToolConfig.Mode != "" || r.Config.MaxOutputTokens != nil {
 			t.Errorf("wrong normalized submit: %s %+v", rpc.Method, r.Tools)
 		}
 		service.mu.Lock()
 		service.bodies = append(service.bodies, append([]byte(nil), rpc.Body...))
+		service.requests = append(service.requests, r)
 		service.mu.Unlock()
 		return response([]any{"FIXTURE-GEN", "FIXTURE-APPLET"}), nil
 	})})

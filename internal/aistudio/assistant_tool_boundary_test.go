@@ -79,14 +79,14 @@ func TestAssistantToolBoundaryDirectEncoderDowngradesToolsOnly(t *testing.T) {
 			}
 		})
 	}
-	for _, kind := range []string{"anti", "token_budget", "code_history", "unknown_google"} {
+	for _, kind := range []string{"anti", "nonpositive_token_budget", "code_history", "unknown_google"} {
 		t.Run(kind, func(t *testing.T) {
 			request := assistantToolTestRequest()
 			switch kind {
 			case "anti":
 				request.Selection.AntiTruncation = true
-			case "token_budget":
-				v := int64(128)
+			case "nonpositive_token_budget":
+				v := int64(0)
 				request.Config.MaxOutputTokens = &v
 			case "code_history":
 				request.Contents[0].Parts = []Part{{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "fixture"}}}

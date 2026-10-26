@@ -80,6 +80,15 @@ func ContextWithGenerationPurpose(ctx context.Context, purpose string) context.C
 	return context.WithValue(ctx, generationPurposeKey{}, purpose)
 }
 
+// GenerationPurpose reads the existing execution-purpose context without changing it.
+// It is not a client request ID or a transport-lifecycle identifier.
+func GenerationPurpose(ctx context.Context) string {
+	if purpose, _ := ctx.Value(generationPurposeKey{}).(string); purpose == "compaction" {
+		return "compaction"
+	}
+	return "reply"
+}
+
 var antiObservationSequence atomic.Uint64
 
 type antiObservation struct {

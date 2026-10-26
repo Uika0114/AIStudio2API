@@ -30,7 +30,11 @@ This is a selective port of upstream `a784c5193b3ba5c4894d536b2f4cd73e87f99475`,
 
 OpenAI Chat, OpenAI Responses and Gemini generateContent/streamGenerateContent adapters map text output, thought output, system instructions, normal conversation and thinking strength. Responses background/history/compaction generation stays pinned to Assistant; retrieving/cancelling saved Responses objects does not create another generation. Output, known usage and terminal errors use existing adapters without fabricated `tool_calls`.
 
-Still rejected rather than ignored: attachments/uploads/Drive references/external media; explicit `max_tokens` / `max_output_tokens`, temperature/topP/topK/seed; enforced output schema/JSON MIME; non-text modalities, image/speech/transcription configuration, media resolution, per-category safety settings; executable-code/result history. Clearing tools does not make these fields supported. Clients that always send output budgets or other unsupported controls must omit them for this route. A minimal prompt is not an enforceable server output budget.
+Explicit output token budgets are accepted for compatibility **only on Assistant**, then ignored before resource selection, strict capability validation and encoding. Positive int64 values are cleared on a request copy; omitted/null values add no default, and nonpositive values remain invalid arguments when entering generation. The server chooses its own generation settings: there is no local output truncation, invented `length`, new continuation or promise to honor a requested maximum. Thinking controls, stop projection, PG/Build/auto behavior and signature validation are unchanged.
+
+For Responses, the common response shell projects a positive Assistant `max_output_tokens` as **null** across unary/stream/background states and newly stored GET objects. null means this adapter does not execute that cap, not that the client necessarily omitted it. The original request value remains available for validation and request-parameter logs; existing historical objects and customer metadata are not rewritten. A queued background request may subsequently fail semantic validation; no HTTP status already delivered is retroactively changed, and no-output compaction operations gain a new validation gate.
+
+Still rejected rather than ignored: attachments/uploads/Drive references/external media; temperature/topP/topK/seed; enforced output schema/JSON MIME; non-text modalities, image/speech/transcription configuration, media resolution, per-category safety settings; executable-code/result history. Clearing tools or output budgets does not make these controls supported. Clients needing an enforceable output budget must use a route with that capability.
 
 Stop matching and hiding thoughts are local projections. Unexpected native function/media output Parts still produce protocol-evidence errors, not empty text success. The known protocol reports step completion, not a complete Gemini safety/length taxonomy; unknown details remain unknown.
 
@@ -56,7 +60,7 @@ Once deployment is separately approved and Assistant explicitly enabled, choose 
 }
 ```
 
-It is only an example, not an Agent-executed request. Tool declarations/history are now accepted for the documented **downgrade**, not passed through as native tools. Leave unsupported token/sampling/schema controls absent. A 403/429 is a rights/quota blocker; a successful Assistant response neither validates tools/anti nor fixes the older Build Argon 429. Check actual channel, attempts, usage provenance and cleanup.
+It is only an example, not an Agent-executed request. Tool declarations/history are accepted for the documented **downgrade**, not passed through as native tools. Positive output budgets may be sent but will be ignored; leave unsupported sampling/schema controls absent. A 403/429 is a rights/quota blocker; a successful Assistant response neither validates tools/anti nor fixes the older Build Argon 429. Check actual channel, attempts, usage provenance and cleanup.
 
 ## Completion fix — 2026-10-20, not deployed
 

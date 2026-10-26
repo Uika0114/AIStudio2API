@@ -23,8 +23,8 @@ import "fmt"
 // 上不会出现工具 envelope，客户端也不会据此以为工具闭环可用。
 //
 // 本模块不做任何 RPC、Applet 创建或资源访问，也不伪造原生工具调用：函数历史
-// 只被改写成 JSON 文本。预算、媒体、输出、安全等限制仍由既有
-// validateAssistantRequest / validateStrictGenerateEntry 处理，不在本模块范围。
+// 只被改写成 JSON 文本。合法显式输出预算只做兼容清理，不兑现该上限；
+// 媒体、sampling、安全及其余限制仍由既有 validator/strict entry 处理。
 //
 // 已知限制（本次候选明确不扩大能力）：ExecutableCode / CodeExecutionResult
 // 历史不在此转录。上游 transcribeFunctionParts 只处理 function part
@@ -55,6 +55,7 @@ var assistantKnownGoogleTools = map[string]bool{
 //     再按唯一待返回调用补齐名称，无法关联时报错；
 //   - 工具声明、tool choice、allowed function names、parallel calls 全部清除
 //     （Tools 整体置零），与 mode 无关；
+//   - 正整数 MaxOutputTokens 在副本上置 nil；非正值拒绝，未指定不补默认；
 //   - 不改动调用方传入的 request 及其 Contents / Parts / RawMessage。
 //
 // 幂等：对同一请求重复调用得到相等结果。
@@ -65,6 +66,14 @@ func prepareAssistantTextRequest(request GenerateRequest) (GenerateRequest, erro
 	}
 	if request.Selection.AntiTruncation {
 		return GenerateRequest{}, assistantToolMappingError("the anti-truncation transport tool is refused on the assistant text route; it is never downgraded to a plain text request")
+	}
+	if budget := request.Config.MaxOutputTokens; budget != nil {
+		if *budget <= 0 {
+			return GenerateRequest{}, fmt.Errorf("%w: assistant max output token budget must be positive when specified", ErrInvalidArgument)
+		}
+		// The Config is a value copy: never mutate the caller-owned pointer target.
+		// CodeAssistantOffline has no supported output-budget control.
+		request.Config.MaxOutputTokens = nil
 	}
 	for _, tool := range request.Tools.Google {
 		if !assistantKnownGoogleTools[tool] {

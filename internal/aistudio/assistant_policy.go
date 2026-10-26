@@ -29,6 +29,10 @@ func (p *AccountPool) assistantSupportsModelLocked(account *Account, modelID str
 // Unknown native token bounds stay zero, never borrowed from PG continuation.
 func AssistantModelVariant(model Model) Model {
 	model = cloneAccountModels([]Model{model})[0]
+	const budgetNotice = "Assistant ignores explicit output token budgets; server-side generation settings apply."
+	if !strings.Contains(model.Description, budgetNotice) {
+		model.Description = strings.TrimSpace(model.Description + " " + budgetNotice)
+	}
 	model.Methods = []string{"generateContent"}
 	model.Channels = []string{string(ChannelAssistant)}
 	model.InputTokenLimit, model.OutputTokenLimit = 0, 0

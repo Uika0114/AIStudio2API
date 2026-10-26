@@ -76,7 +76,7 @@ func TestAssistantCoreGenerationUsesAssistantAndRawUsage(t *testing.T) {
 }
 
 func TestAssistantCoreUnsupportedContractsFailBeforeResources(t *testing.T) {
-	for _, kind := range []string{"anti", "max_tokens", "media", "code_history"} {
+	for _, kind := range []string{"anti", "nonpositive_max_tokens", "media", "code_history"} {
 		t.Run(kind, func(t *testing.T) {
 			fixture, ctx, lease := assistantCoreFixture(t)
 			request := assistantCoreRequest(lease)
@@ -85,8 +85,8 @@ func TestAssistantCoreUnsupportedContractsFailBeforeResources(t *testing.T) {
 				request.Contents = append(request.Contents, Content{Role: RoleAssistant, Parts: []Part{{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "fixture"}}}})
 			case "anti":
 				request.Model = "assistant/anti-truncation/gemini-4-argon"
-			case "max_tokens":
-				budget := int64(128)
+			case "nonpositive_max_tokens":
+				budget := int64(0)
 				request.Config.MaxOutputTokens = &budget
 			case "media":
 				request.Contents[0].Parts = append(request.Contents[0].Parts, Part{InlineData: &Blob{MIME: "image/png", Data: []byte("fixture")}})

@@ -1016,6 +1016,14 @@ func responseShell(id string, created int64, status string, request responsesReq
 	if request.PreviousResponseID != "" {
 		previousResponseID = request.PreviousResponseID
 	}
+	maxOutputTokens := request.MaxOutputTokens
+	if maxOutputTokens != nil && *maxOutputTokens > 0 {
+		if selection, err := aistudio.ParseModelSelection(request.Model); err == nil && selection.Channel == aistudio.ChannelAssistant {
+			// Projection only: keep the input budget for validation, history and logs.
+			// null means the adapter does not execute this limit, not that no value was sent.
+			maxOutputTokens = nil
+		}
+	}
 	return map[string]any{
 		"id":                   id,
 		"object":               "response",
@@ -1038,7 +1046,7 @@ func responseShell(id string, created int64, status string, request responsesReq
 		"tools":                tools,
 		"top_p":                request.TopP,
 		"truncation":           truncation,
-		"max_output_tokens":    request.MaxOutputTokens,
+		"max_output_tokens":    maxOutputTokens,
 		"background":           request.Background,
 		"usage":                nil,
 	}

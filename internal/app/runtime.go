@@ -1944,6 +1944,10 @@ type trackedService struct {
 	modelApplied         uint64
 	stateRefreshMu       sync.Mutex
 	stateRefreshAt       map[string]time.Time
+
+	// Nil in normal runtime; isolated integration tests acquire real pool leases
+	// without starting a browser/WAA worker manager. No API/config setter exists.
+	leaseAcquire func(context.Context, aistudio.AccountSelection) (*aistudio.AccountLease, error)
 }
 
 type modelCatalogService interface {
@@ -3007,6 +3011,9 @@ func (closer *trackedMediaReadCloser) Close() error {
 }
 
 func (service *trackedService) acquireWarmLease(ctx context.Context, selection aistudio.AccountSelection) (*aistudio.AccountLease, error) {
+	if service.leaseAcquire != nil {
+		return service.leaseAcquire(ctx, selection)
+	}
 	fixedAccount := strings.TrimSpace(selection.AccountID) != "" || strings.TrimSpace(selection.ResourceID) != ""
 	failedWorkers := make(map[string]struct{})
 	var promoteFailure error
@@ -3331,6 +3338,13 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 	}
 	requestCtx = observeGenerationMetadata(requestCtx, labels)
 	service.requests.start(request, cancel)
+	if budget := request.Config.MaxOutputTokens; request.Selection.Channel == aistudio.ChannelAssistant && budget != nil && *budget > 0 {
+		// Record adoption once per registered execution, not per physical attempt.
+		// The raw request remains available to the existing input/config logger.
+		service.requests.logRequestProgress(request.ID, "assistant", "INFO", fmt.Sprintf(
+			"assistant_output_budget_ignored max_output_tokens=%d purpose=%s", *budget, aistudio.GenerationPurpose(requestCtx),
+		))
+	}
 	resourceID, err := service.pool.ResourceIDForContents(requestCtx, request.Contents)
 	if err != nil {
 		api.SetAccessLogError(requestCtx, err)
