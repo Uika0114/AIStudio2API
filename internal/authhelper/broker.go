@@ -173,7 +173,7 @@ func (b *Broker) Refresh(ctx context.Context, consumer string, r RefreshRequest)
 	}
 	a.Operation.HTTP = httpCounts.snapshot()
 	if err == nil {
-		err = ValidateCookies(result.Cookies, m.CookieDomains)
+		_, err = projectCookies(result.Cookies, m.CookieDomains)
 	}
 	var materialChanged bool
 	if err == nil {
@@ -226,10 +226,11 @@ func resultFromState(state aistudio.StorageState, meta *aistudio.SessionState, m
 	if a.Operation == nil || a.Operation.ResultCookie != a.CookieRevision || a.Operation.ResultMaterial != a.MaterialVersion {
 		return nil, failure("VERSION_CONFLICT")
 	}
-	if err := ValidateCookies(state.Cookies, m.CookieDomains); err != nil {
+	cookies, err := projectCookies(state.Cookies, m.CookieDomains)
+	if err != nil {
 		return nil, err
 	}
-	return &RefreshResponse{Version: Protocol, Handle: r.Handle, Epoch: r.Epoch, OperationID: r.OperationID, BaseCookie: r.BaseCookie, BaseMaterial: r.BaseMaterial, CookieRevision: a.CookieRevision, MaterialVersion: a.MaterialVersion, GaiaID: a.GaiaID, Email: a.Email, Cookies: append([]aistudio.StateCookie(nil), state.Cookies...)}, nil
+	return &RefreshResponse{Version: Protocol, Handle: r.Handle, Epoch: r.Epoch, OperationID: r.OperationID, BaseCookie: r.BaseCookie, BaseMaterial: r.BaseMaterial, CookieRevision: a.CookieRevision, MaterialVersion: a.MaterialVersion, GaiaID: a.GaiaID, Email: a.Email, Cookies: cookies}, nil
 }
 
 func (b *Broker) Ack(ctx context.Context, consumer string, r AckRequest) error {

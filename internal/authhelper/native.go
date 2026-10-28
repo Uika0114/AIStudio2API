@@ -143,7 +143,7 @@ func registerAuthority(ctx context.Context, m Mapping, sid string) error {
 	if _, err := chromeauth.ValidateSource(ext.Source, ext.OAuth); err != nil {
 		return failure("SOURCE_REBIND_REQUIRED")
 	}
-	if err := ValidateCookies(state.Cookies, m.CookieDomains); err != nil {
+	if _, err := projectCookies(state.Cookies, m.CookieDomains); err != nil {
 		return err
 	}
 	meta := &aistudio.SessionState{Version: Protocol, Authority: &aistudio.SessionAuthority{Handle: m.Handle, Consumer: m.Consumer, GaiaID: m.GaiaID, Email: m.Email, Epoch: 1, MaterialVersion: 1, WindowsUserSID: sid}}

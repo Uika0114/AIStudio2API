@@ -82,7 +82,7 @@ func rebindAuthoritySource(ctx context.Context, m Mapping, epoch uint64, source 
 		ext, exists, e := results[0].State.AuthExtension()
 		if e != nil || !exists || ext.OAuth == nil || ext.OAuth.GaiaID != m.GaiaID || !chromeauth.SameSource(source, ext.Source) {
 			importErr = failure("IDENTITY_MISMATCH")
-		} else if e = ValidateCookies(results[0].State.Cookies, m.CookieDomains); e != nil {
+		} else if _, e = projectCookies(results[0].State.Cookies, m.CookieDomains); e != nil {
 			importErr = e
 		} else {
 			state.Cookies = results[0].State.Cookies

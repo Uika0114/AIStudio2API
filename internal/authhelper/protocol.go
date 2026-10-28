@@ -70,25 +70,46 @@ func operationMatches(o *aistudio.SessionOperation, r RefreshRequest) bool {
 	return o.ID == r.OperationID && o.Epoch == r.Epoch && o.BaseCookie == r.BaseCookie && o.BaseMaterial == r.BaseMaterial && o.Reason == r.Reason && o.Deadline == r.Deadline
 }
 
-// Domain policy is local on both ends; never populated from an RPC request.
-// The conservative default deliberately fails on unknown country/partition forms.
-func ValidateCookies(cookies []aistudio.StateCookie, domains []string) error {
+// cookieDomainAllowed shares the existing local policy without normalizing cookies.
+func cookieDomainAllowed(domain string, domains []string) bool {
 	if len(domains) == 0 {
 		domains = []string{"google.com"}
 	}
+	domain = strings.ToLower(strings.TrimPrefix(domain, "."))
+	for _, d := range domains {
+		d = strings.ToLower(strings.TrimPrefix(d, "."))
+		if d != "" && (domain == d || strings.HasSuffix(domain, "."+d)) {
+			return true
+		}
+	}
+	return false
+}
+
+// projectCookies selects the remote subset without changing the complete authority.
+// Selection preserves every field and its order; in-domain invalid entries still fail.
+func projectCookies(cookies []aistudio.StateCookie, domains []string) ([]aistudio.StateCookie, error) {
+	var projected []aistudio.StateCookie
+	for _, c := range cookies {
+		if cookieDomainAllowed(c.Domain, domains) {
+			projected = append(projected, c)
+		}
+	}
+	if err := ValidateCookies(projected, domains); err != nil {
+		return nil, err
+	}
+	return projected, nil
+}
+
+// Domain policy is local on both ends; never populated from an RPC request.
+// The conservative default deliberately fails on unknown country/partition forms.
+func ValidateCookies(cookies []aistudio.StateCookie, domains []string) error {
 	if len(cookies) == 0 || len(cookies) > 128 {
 		return failure("COOKIE_POLICY_FAILURE")
 	}
 	seen := make(map[string]bool)
 	for _, c := range cookies {
 		domain := strings.ToLower(strings.TrimPrefix(c.Domain, "."))
-		allowed := false
-		for _, d := range domains {
-			d = strings.ToLower(strings.TrimPrefix(d, "."))
-			if d != "" && (domain == d || strings.HasSuffix(domain, "."+d)) {
-				allowed = true
-			}
-		}
+		allowed := cookieDomainAllowed(c.Domain, domains)
 		key := c.Name + "\x00" + domain + "\x00" + c.Path
 		if !allowed || seen[key] || c.PartitionKey != "" || c.Name == "" || len(c.Name) > 256 || len(c.Value) > 16384 || strings.ContainsAny(c.Name, "\r\n\t ;,=\"\\") || strings.ContainsAny(c.Value, "\r\n\x00") || math.IsNaN(c.Expires) || math.IsInf(c.Expires, 0) {
 			return failure("COOKIE_POLICY_FAILURE")

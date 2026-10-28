@@ -22,7 +22,7 @@ func fixtureBroker(t *testing.T, renew RenewFunc) (*Broker, Mapping, *atomic.Int
 	t.Helper()
 	mapping := Mapping{Handle: "fixture_handle_0001", Consumer: "consumer.fixture.invalid", GaiaID: "fixture_gaia", Email: "fixture@example.invalid", StateFile: filepath.Join(t.TempDir(), "fixture", "storage-state.json"), DirectAuth: true}
 	state := aistudio.StorageState{Cookies: fixtureCookies("initial-fixture")}
-	ext := aistudio.AuthExtension{Source: aistudio.AuthSource{Browser: "chrome", ChromeRoot: "D:/fixture-only", Profile: "Default", GaiaID: mapping.GaiaID, Email: mapping.Email}, OAuth: &aistudio.ChromeOAuthMaterial{GaiaID: mapping.GaiaID, RefreshToken: "fixture-not-a-token", WrappedBindingKey: []byte("fixture-not-a-key")}}
+	ext := aistudio.AuthExtension{Source: aistudio.AuthSource{Browser: "chrome", ChromeRoot: filepath.Join(t.TempDir(), "fixture-only"), Profile: "Default", GaiaID: mapping.GaiaID, Email: mapping.Email}, OAuth: &aistudio.ChromeOAuthMaterial{GaiaID: mapping.GaiaID, RefreshToken: "fixture-not-a-token", WrappedBindingKey: []byte("fixture-not-a-key")}}
 	if err := state.SetAuthExtension(ext); err != nil {
 		t.Fatal(err)
 	}
