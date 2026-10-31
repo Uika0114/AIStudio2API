@@ -3337,6 +3337,7 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 		labels[account.ID] = account.Label
 	}
 	requestCtx = observeGenerationMetadata(requestCtx, labels)
+	requestCtx = context.WithValue(requestCtx, remoteRecoveryRequestKey{}, request.ID)
 	service.requests.start(request, cancel)
 	if budget := request.Config.MaxOutputTokens; request.Selection.Channel == aistudio.ChannelAssistant && budget != nil && *budget > 0 {
 		// Record adoption once per registered execution, not per physical attempt.

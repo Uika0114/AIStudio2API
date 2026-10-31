@@ -56,6 +56,9 @@ func RunCLI(args []string, out, errOut io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = WithRecoveryObserver(ctx, func(v RecoveryProgress) {
+		writeCLI(errOut, map[string]any{"event": "remote_auth", "phase": v.Phase, "code": v.Code, "operation_id": v.OperationID, "revision": v.Revision, "pending_revision": v.PendingRevision, "epoch": v.Epoch, "cookie_revision": v.CookieRevision, "material_version": v.MaterialVersion, "lookup_only": v.LookupOnly})
+	})
 	var err error
 	switch *action {
 	case "signal-stop":
@@ -274,6 +277,15 @@ func reconcileProjection(ctx context.Context, client *Client, path string, keepC
 		if err := client.ReconcileKeepingCurrent(ctx, &state, path); err != nil {
 			return err
 		}
+		current, e := state.Session()
+		if e != nil || current == nil || current.Remote == nil {
+			return failure("INVALID_SESSION_STATE")
+		}
+		// NOT_STARTED keep-current is already a persisted metadata-only
+		// operator disposition; it needs no projection commit or ACK.
+		if current.Remote.Ack == nil {
+			return nil
+		}
 		return commitNativeProjection(ctx, client, &state, path)
 	}
 	if meta.Remote.Pending != nil || meta.Remote.EnrollmentRequired || meta.Remote.RecoveryRequired {
@@ -299,8 +311,12 @@ func commitNativeProjection(ctx context.Context, client *Client, state *aistudio
 		return failure("COOKIE_POLICY_FAILURE")
 	}
 	if aistudio.WriteManagedSessionState(ctx, path, state) != nil {
+		meta, _ := state.Session()
+		reportRecovery(ctx, "commit", "STATE_UNAVAILABLE", meta, true)
 		return failure("STATE_UNAVAILABLE")
 	}
+	meta, _ := state.Session()
+	reportRecovery(ctx, "commit", "OK", meta, true)
 	return ackNativeProjection(ctx, client, state, path)
 }
 func ackNativeProjection(ctx context.Context, client *Client, state *aistudio.StorageState, path string) error {
@@ -316,7 +332,9 @@ func ackNativeProjection(ctx context.Context, client *Client, state *aistudio.St
 	}
 	meta.Remote.Ack = nil
 	if state.SetSession(meta) != nil || aistudio.WriteManagedSessionState(ctx, path, state) != nil {
+		reportRecovery(ctx, "ack_persist", "STATE_UNAVAILABLE", meta, true)
 		return failure("STATE_UNAVAILABLE")
 	}
+	reportRecovery(ctx, "ack_persist", "OK", meta, true)
 	return nil
 }

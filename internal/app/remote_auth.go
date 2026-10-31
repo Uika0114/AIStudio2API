@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/authhelper"
 )
+
+type remoteRecoveryRequestKey struct{}
 
 type remoteSessionProvider interface {
 	PrepareRecovery(context.Context, *aistudio.StorageState, string, string, func(string) error) error
@@ -65,6 +68,23 @@ func (r *authRuntimeRefresher) tryRemoteRefresh(ctx context.Context) (bool, erro
 		return true, aistudio.SessionError("CANCELED")
 	}
 	account := lease.Account()
+	ctx = authhelper.WithRecoveryObserver(ctx, func(v authhelper.RecoveryProgress) {
+		if r.requests != nil {
+			revision, lookup := "unknown", "not_applicable"
+			if v.Revision != nil {
+				revision = fmt.Sprint(*v.Revision)
+			}
+			if v.LookupOnly != nil {
+				lookup = fmt.Sprint(*v.LookupOnly)
+			}
+			message := fmt.Sprintf("remote_auth phase=%s code=%s operation=%s revision=%s pending_revision=%d epoch=%d cookie_revision=%d material_version=%d lookup_only=%s", v.Phase, v.Code, v.OperationID, revision, v.PendingRevision, v.Epoch, v.CookieRevision, v.MaterialVersion, lookup)
+			if id, _ := ctx.Value(remoteRecoveryRequestKey{}).(string); id != "" {
+				r.requests.logRequestProgress(id, account.Config.Label, "INFO", message)
+			} else {
+				r.requests.log(account.Config.Label, "INFO", message)
+			}
+		}
+	})
 	err = lease.RefreshManagedStorageState(ctx, func(s *aistudio.StorageState) error {
 		metadata, e := s.Session()
 		if e != nil || metadata == nil || metadata.Remote == nil || metadata.Remote.Email != account.ID || metadata.Remote.Consumer != r.remote.Consumer() {
@@ -93,11 +113,34 @@ func (r *authRuntimeRefresher) tryRemoteRefresh(ctx context.Context) (bool, erro
 		if !aistudio.IsSessionFailure(err) {
 			err = aistudio.SessionError("STATE_UNAVAILABLE")
 		}
+		m, _ := state.Session()
+		if current, e := lease.ReloadStorageState(); e == nil {
+			m, _ = current.Session()
+		}
+		authhelper.ObserveRecoveryStage(ctx, "commit_blocked", err, m)
 		return true, err
 	}
+	// Another lease may have completed a refresh while this lease waited.
+	// The pool deduplicates that work without invoking our callback; do not
+	// confuse a still-pending/retired recovery with a successful authentication.
+	current, e := lease.ReloadStorageState()
+	if e != nil {
+		return true, aistudio.SessionError("STATE_UNAVAILABLE")
+	}
+	latest, e := current.Session()
+	if e != nil || latest == nil || latest.Remote == nil || latest.Remote.Email != account.ID || latest.Remote.Consumer != r.remote.Consumer() {
+		return true, aistudio.SessionError("IDENTITY_MISMATCH")
+	}
+	if latest.Remote.EnrollmentRequired {
+		return true, aistudio.SessionError("BOOTSTRAP_REQUIRED")
+	}
+	if latest.Remote.Pending != nil || latest.Remote.RecoveryRequired {
+		return true, aistudio.SessionError("VERSION_CONFLICT")
+	}
+	authhelper.ObserveRecoveryStage(ctx, "commit", nil, latest)
 	// Cookies have committed. A lost ack must not turn the successful recovery
 	// into a new auth workflow or discard the valid session. Next recovery retries it.
-	_ = lease.UpdateRemoteSession(ctx, func(s *aistudio.SessionState) error {
+	ackErr := lease.UpdateRemoteSession(ctx, func(s *aistudio.SessionState) error {
 		if s.Remote.Ack == nil {
 			return nil
 		}
@@ -107,6 +150,9 @@ func (r *authRuntimeRefresher) tryRemoteRefresh(ctx context.Context) (bool, erro
 		s.Remote.Ack = nil
 		return nil
 	})
+	if ackErr != nil {
+		authhelper.ObserveRecoveryStage(ctx, "ack_pending", ackErr, latest)
+	}
 	return true, nil
 }
 

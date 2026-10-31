@@ -19,33 +19,44 @@ func (c *Client) ReconcileKeepingCurrent(ctx context.Context, state *aistudio.St
 	if r.Consumer != c.consumer || r.Pending == nil || r.Pending.StateRevision == meta.Revision || r.Ack != nil {
 		return failure("INVALID_REQUEST")
 	}
-	if err := ValidateCookies(state.Cookies, c.domains); err != nil {
-		return err
+	if !r.EnrollmentRequired && r.Pending.Reason != "bootstrap" {
+		if err := ValidateCookies(state.Cookies, c.domains); err != nil {
+			return err
+		}
 	}
 	request := operationRequest(r.Pending, r.Handle)
 	request.LookupOnly = true
-	result, err := c.rpc(ctx, "/v1/refresh", request)
+	result, err := c.pendingResult(ctx, state, path, meta, true)
 	if err != nil {
 		var notStarted *notStartedError
 		if !errors.As(err, &notStarted) {
 			return err
 		}
-		if aistudio.CheckSessionRevision(path, *state) != nil {
-			return failure("VERSION_CONFLICT")
+		if e := retireNotStarted(ctx, state, path, meta, notStarted.receipt, true); e != nil {
+			return e
 		}
-		r.RetiredOperations = append(r.RetiredOperations, *r.Pending)
-		r.Pending = nil
-		r.EnrollmentRequired = false
-		r.RecoveryRequired = false
-		return state.SetSession(meta)
+		// No-send disposition was committed under the current snapshot CAS.
+		// A bootstrap remains unfinished even if local cookies happen to sign.
+		if r.EnrollmentRequired || request.Reason == "bootstrap" {
+			return err
+		}
+		return nil
 	}
-	value := result.Session
-	if value == nil || value.Version != Protocol || value.Handle != r.Handle || value.Epoch != r.Epoch || value.OperationID != request.OperationID || value.BaseCookie != r.CookieRevision || value.BaseMaterial != r.MaterialVersion || value.CookieRevision != r.CookieRevision+1 || value.MaterialVersion < r.MaterialVersion || value.MaterialVersion > r.MaterialVersion+1 || value.GaiaID != r.GaiaID || value.Email != r.Email {
-		return failure("IDENTITY_MISMATCH")
-	}
-	if err := ValidateCookies(value.Cookies, c.domains); err != nil {
+	if err := c.validateRecoveryResult(meta, request, result); err != nil {
 		return err
 	}
+	// Choosing existing cookies is never a substitute for receiving the first
+	// projection of a newly enrolled binding, even when a ready result exists.
+	if r.EnrollmentRequired || request.Reason == "bootstrap" {
+		return failure("BOOTSTRAP_REQUIRED")
+	}
+	if err := ValidateCookies(state.Cookies, c.domains); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return failure("CANCELED")
+	}
+	value := result.Session
 	if err := aistudio.CheckSessionRevision(path, *state); err != nil {
 		return err
 	}

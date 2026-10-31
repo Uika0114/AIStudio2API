@@ -102,6 +102,11 @@ func (c *Client) AckSession(ctx context.Context, r *aistudio.RemoteSession) erro
 	}
 	a := r.Ack
 	result, err := c.rpc(ctx, "/v1/ack", AckRequest{Version: Protocol, Handle: r.Handle, Epoch: a.Epoch, OperationID: a.ID, CookieRevision: a.Cookie, MaterialVersion: a.Material, Mode: a.Mode})
+	code := "OK"
+	if err != nil {
+		code = safeCode(err)
+	}
+	reportRecovery(ctx, "ack", code, &aistudio.SessionState{Remote: r}, true)
 	if err != nil {
 		return err
 	}
@@ -136,7 +141,8 @@ func (c *Client) PrepareRecovery(ctx context.Context, state *aistudio.StorageSta
 		meta, _ = state.Session()
 		r = meta.Remote
 	}
-	if r.Pending == nil {
+	created := r.Pending == nil
+	if created {
 		if reason != "bootstrap" && reason != "reauth" {
 			return failure("INVALID_REQUEST")
 		}
@@ -167,47 +173,36 @@ func (c *Client) PrepareRecovery(ctx context.Context, state *aistudio.StorageSta
 		meta, _ = state.Session()
 		r = meta.Remote
 	}
-	if r.Pending.StateRevision != meta.Revision {
-		return failure("VERSION_CONFLICT")
-	}
-	if r.Pending.Reason == "reauth" {
-		if takeBudget == nil {
-			return failure("RECOVERY_BUDGET_REQUIRED")
-		}
-		if err := takeBudget(r.Pending.ID); err != nil {
-			return err
-		}
-	}
 	request := operationRequest(r.Pending, r.Handle)
-	result, err := c.rpc(ctx, "/v1/refresh", request)
+	request.LookupOnly = !created
+	result, err := c.pendingResult(ctx, state, path, meta, !created)
 	if err != nil {
 		var notStarted *notStartedError
 		if errors.As(err, &notStarted) {
-			if aistudio.CheckSessionRevision(path, *state) != nil {
-				return failure("VERSION_CONFLICT")
-			}
-			r.RetiredOperations = append(r.RetiredOperations, *r.Pending)
-			r.Pending = nil
-			r.RecoveryRequired = true
-			if state.SetSession(meta) != nil || aistudio.WriteManagedSessionState(ctx, path, state) != nil {
-				return failure("STATE_UNAVAILABLE")
+			if e := retireNotStarted(ctx, state, path, meta, notStarted.receipt, false); e != nil {
+				return e
 			}
 		}
+		return err
+	}
+	if err := c.validateRecoveryResult(meta, request, result); err != nil {
+		reportRecovery(ctx, "result_validation", safeCode(err), meta, !created)
+		return err
+	}
+	// A newer local snapshot is sufficient for lookup and metadata-only
+	// retirement, never permission to overwrite independently updated cookies.
+	if r.Pending.StateRevision != meta.Revision {
+		reportRecovery(ctx, "projection_blocked", "VERSION_CONFLICT", meta, !created)
+		return failure("VERSION_CONFLICT")
+	}
+	if err := aistudio.CheckSessionRevision(path, *state); err != nil {
+		reportRecovery(ctx, "projection_blocked", "VERSION_CONFLICT", meta, !created)
 		return err
 	}
 	if ctx.Err() != nil {
 		return failure("CANCELED")
 	}
 	value := result.Session
-	if value == nil || value.Version != Protocol || value.Handle != r.Handle || value.Epoch != r.Epoch || value.OperationID != request.OperationID || value.BaseCookie != r.CookieRevision || value.BaseMaterial != r.MaterialVersion || value.CookieRevision != r.CookieRevision+1 || value.MaterialVersion < r.MaterialVersion || value.MaterialVersion > r.MaterialVersion+1 || value.GaiaID != r.GaiaID || value.Email != r.Email {
-		return failure("IDENTITY_MISMATCH")
-	}
-	if err := ValidateCookies(value.Cookies, c.domains); err != nil {
-		return err
-	}
-	if err := aistudio.CheckSessionRevision(path, *state); err != nil {
-		return err
-	}
 	state.Cookies = append([]aistudio.StateCookie(nil), value.Cookies...)
 	r.CookieRevision, r.MaterialVersion = value.CookieRevision, value.MaterialVersion
 	r.Pending = nil
@@ -216,5 +211,6 @@ func (c *Client) PrepareRecovery(ctx context.Context, state *aistudio.StorageSta
 		r.EnrollmentRequired = false
 	}
 	r.Ack = &aistudio.SessionAck{ID: request.OperationID, Epoch: r.Epoch, Cookie: r.CookieRevision, Material: r.MaterialVersion}
+	reportRecovery(ctx, "projection_prepared", "OK", meta, !created)
 	return state.SetSession(meta)
 }
