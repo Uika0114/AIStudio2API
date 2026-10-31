@@ -158,7 +158,7 @@ func TestAssistantOutputBudgetInvalidAndOtherRestrictionsBeforeResources(t *test
 			case "negative":
 				budget = -1
 			case "temperature":
-				v := 0.1
+				v := 2.1 // Legal sampling is now ignored; keep the invalid-value guard.
 				request.Config.Temperature = &v
 			case "schema":
 				request.Config.ResponseSchema = []byte(`{"type":"object"}`)

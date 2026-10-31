@@ -3345,6 +3345,27 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 			"assistant_output_budget_ignored max_output_tokens=%d purpose=%s", *budget, aistudio.GenerationPurpose(requestCtx),
 		))
 	}
+	if request.Selection.Channel == aistudio.ChannelAssistant && aistudio.ValidateAssistantSamplingParameters(request.Config) == nil {
+		// Adoption is once per validated execution, outside physical retries.
+		var fields []string
+		if request.Config.Temperature != nil {
+			fields = append(fields, "temperature")
+		}
+		if request.Config.TopP != nil {
+			fields = append(fields, "top_p")
+		}
+		if request.Config.TopK != nil {
+			fields = append(fields, "top_k")
+		}
+		if request.Config.Seed != nil {
+			fields = append(fields, "seed")
+		}
+		if len(fields) > 0 {
+			service.requests.logRequestProgress(request.ID, "assistant", "INFO", fmt.Sprintf(
+				"assistant_sampling_parameters_ignored fields=%s purpose=%s", strings.Join(fields, ","), aistudio.GenerationPurpose(requestCtx),
+			))
+		}
+	}
 	resourceID, err := service.pool.ResourceIDForContents(requestCtx, request.Contents)
 	if err != nil {
 		api.SetAccessLogError(requestCtx, err)

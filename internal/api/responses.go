@@ -1017,11 +1017,18 @@ func responseShell(id string, created int64, status string, request responsesReq
 		previousResponseID = request.PreviousResponseID
 	}
 	maxOutputTokens := request.MaxOutputTokens
-	if maxOutputTokens != nil && *maxOutputTokens > 0 {
-		if selection, err := aistudio.ParseModelSelection(request.Model); err == nil && selection.Channel == aistudio.ChannelAssistant {
-			// Projection only: keep the input budget for validation, history and logs.
-			// null means the adapter does not execute this limit, not that no value was sent.
+	temperature, topP := request.Temperature, request.TopP
+	if selection, err := aistudio.ParseModelSelection(request.Model); err == nil && selection.Channel == aistudio.ChannelAssistant {
+		// Read-only, per-field projection: null is not a successful preflight or
+		// a physical send. Preserve invalid values and the original request.
+		if maxOutputTokens != nil && *maxOutputTokens > 0 {
 			maxOutputTokens = nil
+		}
+		if aistudio.ValidateAssistantSamplingParameters(aistudio.GenerationConfig{Temperature: temperature}) == nil {
+			temperature = nil
+		}
+		if aistudio.ValidateAssistantSamplingParameters(aistudio.GenerationConfig{TopP: topP}) == nil {
+			topP = nil
 		}
 	}
 	return map[string]any{
@@ -1040,11 +1047,11 @@ func responseShell(id string, created int64, status string, request responsesReq
 		"parallel_tool_calls":  parallelToolCalls,
 		"previous_response_id": previousResponseID,
 		"reasoning":            reasoning,
-		"temperature":          request.Temperature,
+		"temperature":          temperature,
 		"text":                 text,
 		"tool_choice":          toolChoice,
 		"tools":                tools,
-		"top_p":                request.TopP,
+		"top_p":                topP,
 		"truncation":           truncation,
 		"max_output_tokens":    maxOutputTokens,
 		"background":           request.Background,

@@ -33,6 +33,10 @@ func AssistantModelVariant(model Model) Model {
 	if !strings.Contains(model.Description, budgetNotice) {
 		model.Description = strings.TrimSpace(model.Description + " " + budgetNotice)
 	}
+	const samplingNotice = "Assistant accepts but ignores temperature, topP, topK and seed; sampling is server-controlled and seed reproducibility is not guaranteed."
+	if !strings.Contains(model.Description, samplingNotice) {
+		model.Description = strings.TrimSpace(model.Description + " " + samplingNotice)
+	}
 	model.Methods = []string{"generateContent"}
 	model.Channels = []string{string(ChannelAssistant)}
 	model.InputTokenLimit, model.OutputTokenLimit = 0, 0

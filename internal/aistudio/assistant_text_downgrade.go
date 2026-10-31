@@ -23,8 +23,8 @@ import "fmt"
 // 上不会出现工具 envelope，客户端也不会据此以为工具闭环可用。
 //
 // 本模块不做任何 RPC、Applet 创建或资源访问，也不伪造原生工具调用：函数历史
-// 只被改写成 JSON 文本。合法显式输出预算只做兼容清理，不兑现该上限；
-// 媒体、sampling、安全及其余限制仍由既有 validator/strict entry 处理。
+// 只被改写成 JSON 文本。合法显式输出预算与采样参数只做兼容清理，不兑现控制；
+// 媒体、安全及其余限制仍由既有 validator/strict entry 处理。
 //
 // 已知限制（本次候选明确不扩大能力）：ExecutableCode / CodeExecutionResult
 // 历史不在此转录。上游 transcribeFunctionParts 只处理 function part
@@ -56,6 +56,7 @@ var assistantKnownGoogleTools = map[string]bool{
 //   - 工具声明、tool choice、allowed function names、parallel calls 全部清除
 //     （Tools 整体置零），与 mode 无关；
 //   - 正整数 MaxOutputTokens 在副本上置 nil；非正值拒绝，未指定不补默认；
+//   - temperature/topP/topK/seed 全部合法后在副本上清 nil，不保证采样可控；
 //   - 不改动调用方传入的 request 及其 Contents / Parts / RawMessage。
 //
 // 幂等：对同一请求重复调用得到相等结果。
@@ -75,6 +76,13 @@ func prepareAssistantTextRequest(request GenerateRequest) (GenerateRequest, erro
 		// CodeAssistantOffline has no supported output-budget control.
 		request.Config.MaxOutputTokens = nil
 	}
+	if err := ValidateAssistantSamplingParameters(request.Config); err != nil {
+		return GenerateRequest{}, err
+	}
+	// Validate the entire sampling group before clearing any field. Config is a
+	// value copy; never write through the caller-owned pointers or invent defaults.
+	request.Config.Temperature, request.Config.TopP = nil, nil
+	request.Config.TopK, request.Config.Seed = nil, nil
 	for _, tool := range request.Tools.Google {
 		if !assistantKnownGoogleTools[tool] {
 			// 上游 supportedTools 对未知 Google tool 直接报错，而不是静默过滤。

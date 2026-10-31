@@ -263,7 +263,7 @@ func TestAssistantOutputBudgetTrackedExecutionLogging(t *testing.T) {
 				payload["max_tokens"] = 0
 			}
 			if mode == "other_invalid" {
-				payload["temperature"] = 0.2
+				payload["temperature"] = 2.1 // Still invalid after compatibility cleanup.
 			}
 			result := budgetAppPost(t, fixture.handler, "/v1/chat/completions", payload)
 			wantCompatible := mode != "zero" && mode != "omitted" && mode != "other_invalid"
