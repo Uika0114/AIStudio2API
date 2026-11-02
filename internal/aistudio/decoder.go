@@ -52,10 +52,19 @@ type sparseJSONReader struct {
 	inString      bool
 	escaped       bool
 	previousToken byte
+	output        *outputDecoderTiming
+	pendingBatch  outputReadBatch
 }
 
-func newSparseJSONReader(source io.Reader) io.Reader {
-	return &sparseJSONReader{source: bufio.NewReader(source)}
+func newSparseJSONReader(source io.Reader, observations ...*outputDecoderTiming) io.Reader {
+	var output *outputDecoderTiming
+	if len(observations) > 0 {
+		output = observations[0]
+	}
+	if output != nil {
+		source = output.source(source)
+	}
+	return &sparseJSONReader{source: bufio.NewReader(source), output: output}
 }
 
 func (r *sparseJSONReader) Read(destination []byte) (int, error) {
@@ -63,6 +72,7 @@ func (r *sparseJSONReader) Read(destination []byte) (int, error) {
 	for written < len(destination) {
 		if len(r.pending) > 0 {
 			count := copy(destination[written:], r.pending)
+			r.output.normalized(count, r.pendingBatch)
 			r.pending = r.pending[count:]
 			written += count
 			continue
@@ -78,6 +88,7 @@ func (r *sparseJSONReader) Read(destination []byte) (int, error) {
 			return 0, err
 		}
 		r.pending = r.normalize(value)
+		r.pendingBatch = r.output.currentBatch()
 	}
 	return written, nil
 }
@@ -129,8 +140,12 @@ func decodeJSONValue(raw []byte) (json.RawMessage, error) {
 	return value, nil
 }
 
-func decodeGenerateItems(source io.Reader, consume func(json.RawMessage) error) error {
-	decoder := json.NewDecoder(newSparseJSONReader(source))
+func decodeGenerateItems(source io.Reader, consume func(json.RawMessage) error, observations ...*outputDecoderTiming) error {
+	var output *outputDecoderTiming
+	if len(observations) > 0 {
+		output = observations[0]
+	}
+	decoder := json.NewDecoder(newSparseJSONReader(source, output))
 	decoder.UseNumber()
 	rootStart, err := decoder.Token()
 	if err != nil {
@@ -155,6 +170,7 @@ func decodeGenerateItems(source io.Reader, consume func(json.RawMessage) error) 
 		if err := decoder.Decode(&raw); err != nil {
 			return &ProtocolEvidenceError{Method: "GenerateContent", Path: fmt.Sprintf("$[0][%d]", index), Detail: err.Error()}
 		}
+		output.frameRange(decoder.InputOffset(), len(raw))
 		if err := consume(append(json.RawMessage(nil), raw...)); err != nil {
 			return err
 		}
@@ -166,6 +182,7 @@ func decodeGenerateItems(source io.Reader, consume func(json.RawMessage) error) 
 		}
 		return &ProtocolEvidenceError{Method: "GenerateContent", Path: "$[0]", Detail: "field 1 没有正常结束"}
 	}
+	output.stopMapping()
 	fieldIndex := 1
 	for decoder.More() {
 		var raw json.RawMessage
@@ -186,6 +203,9 @@ func decodeGenerateItems(source io.Reader, consume func(json.RawMessage) error) 
 			return &ProtocolEvidenceError{Method: "GenerateContent", Path: "$", Detail: "响应后存在第二个根值", Raw: extra}
 		}
 		return &ProtocolEvidenceError{Method: "GenerateContent", Path: "$", Detail: err.Error()}
+	}
+	if output != nil {
+		output.complete = true
 	}
 	return nil
 }

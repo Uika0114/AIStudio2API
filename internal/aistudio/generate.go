@@ -670,6 +670,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 	if err != nil {
 		return nil, err
 	}
+	ctx = contextWithOutputLifetime(ctx)
 	ctx, observation := beginAntiObservation(ctx, request, !c.disableAntiTruncationSystemPrompt)
 	defer func() {
 		if resultErr != nil {
@@ -1126,6 +1127,7 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 	var previous *Usage
 	for {
 		decoder := NewFrameDecoder()
+		decoder.output = attempt.outputDecoder()
 		decoder.continuable = defaults.ContinuedOutputTokens > 0
 		decoder.continueAtMaxTokens = int64(request.continuationRound+1)*continuationRoundTokens < total
 		forward := emit
@@ -1147,13 +1149,16 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 			reportRawGenerationEvent(ctx, event)
 		}
 		if err := DecodeGenerateStream(source, decoder, forward); err != nil {
+			attempt.finishOutput(decoder.output, err, decoder.finished)
 			attempt.decoded(err, false)
 			return err
 		}
 		if err := decoder.End(); err != nil {
+			attempt.finishOutput(decoder.output, err, decoder.finished)
 			attempt.decoded(err, false)
 			return err
 		}
+		attempt.finishOutput(decoder.output, nil, decoder.finished)
 		attempt.decoded(nil, decoder.continuation != "")
 		if decoder.continuation == "" {
 			return nil
@@ -1220,5 +1225,5 @@ func DecodeGenerateStream(source io.Reader, decoder *FrameDecoder, emit func(Eve
 			}
 		}
 		return nil
-	})
+	}, decoder.output)
 }

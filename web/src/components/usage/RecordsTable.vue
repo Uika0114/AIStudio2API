@@ -7,6 +7,8 @@ import type { UsageRecord } from '@/types'
 import UiIcon from '../UiIcon.vue'
 import UiSelect from '../UiSelect.vue'
 import RecordDrawer from './RecordDrawer.vue'
+import RecordModelName from './RecordModelName.vue'
+import RecordTokenTotal from './RecordTokenTotal.vue'
 import { useUsageFormat } from './format'
 import { latencyTone, readPreference, writePreference } from './model'
 
@@ -328,10 +330,8 @@ function latencyWidth(milliseconds: number): number {
                 v-for="column in allColumns.filter((item) => visible.includes(item))"
                 :key="column"
               >
-                <td v-if="column === 'model'" class="max-w-48 px-4 py-2">
-                  <span v-tooltip="record.model" class="block truncate">{{
-                    record.model || '—'
-                  }}</span>
+                <td v-if="column === 'model'" class="max-w-64 px-4 py-2">
+                  <RecordModelName :record="record" />
                 </td>
                 <td v-else-if="column === 'account'" class="max-w-56 px-4 py-2">
                   <span v-tooltip="record.account" class="block truncate">{{
@@ -348,7 +348,7 @@ function latencyWidth(milliseconds: number): number {
                   v-else-if="column === 'tokens'"
                   class="px-4 py-2 text-right whitespace-nowrap tabular-nums"
                 >
-                  <div class="text-gray-200">{{ compact(record.total_tokens) }}</div>
+                  <div class="text-gray-200"><RecordTokenTotal :record="record" /></div>
                   <div class="text-[11px] text-gray-500">
                     {{ compact(record.input_tokens) }} / {{ compact(record.reasoning_tokens) }} /
                     {{ compact(record.reply_tokens) }}
@@ -400,15 +400,15 @@ function latencyWidth(milliseconds: number): number {
                 dateTime(record.time, true)
               }}</span>
             </div>
-            <div v-tooltip.overflow="record.model" class="mt-1.5 truncate text-gray-200">
-              {{ record.model || '—' }}
+            <div class="mt-1.5 text-gray-200">
+              <RecordModelName :record="record" />
             </div>
             <div class="mt-0.5 flex gap-3 text-gray-500 tabular-nums">
               <span v-tooltip.overflow="record.account" class="truncate">{{
                 record.account || '—'
               }}</span>
               <span class="ml-auto shrink-0">{{ duration(record.duration_ms) }}</span>
-              <span class="shrink-0">{{ compact(record.total_tokens) }}</span>
+              <span class="shrink-0"><RecordTokenTotal :record="record" /></span>
             </div>
           </button>
         </li>

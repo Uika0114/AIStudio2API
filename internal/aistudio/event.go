@@ -7,10 +7,14 @@ import (
 
 // FrameDecoder 将 field 1 repeated 帧转换为规范事件
 type FrameDecoder struct {
-	observe   func(Event) // complete-frame observation precedes output/stop projection
-	usage     *Usage
-	finished  bool
-	lastFrame json.RawMessage
+	observe         func(Event) // complete-frame observation precedes output/stop projection
+	output          *outputDecoderTiming
+	outputCount     int64
+	outputKnown     bool
+	outputReasoning *int64
+	usage           *Usage
+	finished        bool
+	lastFrame       json.RawMessage
 	// continuable 表示请求开启了自动续写
 	continuable bool
 	// continueAtMaxTokens 表示本轮输出上限低于请求的输出总上限
@@ -30,6 +34,7 @@ func NewFrameDecoder() *FrameDecoder {
 
 // Decode 解码一条 repeated 流帧
 func (d *FrameDecoder) Decode(raw json.RawMessage) ([]Event, error) {
+	d.outputCount, d.outputKnown, d.outputReasoning = 0, false, nil
 	events, err := d.decode(raw)
 	if d.observe != nil {
 		if d.usage != nil {
@@ -41,6 +46,7 @@ func (d *FrameDecoder) Decode(raw json.RawMessage) ([]Event, error) {
 			}
 		}
 	}
+	d.output.observe(events, d.outputCount, d.outputKnown, d.outputReasoning, err)
 	return events, err
 }
 
@@ -52,6 +58,9 @@ func (d *FrameDecoder) decode(raw json.RawMessage) ([]Event, error) {
 	}
 	if len(frame) == 0 {
 		return nil, d.protocolError("$[0][]", "空流帧", raw)
+	}
+	if d.output != nil {
+		d.outputCount, d.outputKnown, d.outputReasoning = freshPGOutputCount(rawAt(frame, 2))
 	}
 	if isJSONNull(frame[0]) {
 		if feedbackRaw := rawAt(frame, 1); !isJSONNull(feedbackRaw) {

@@ -642,7 +642,11 @@ func (runtime *goWAARuntime) SendProtected(ctx context.Context, rawURL string, h
 	if err != nil {
 		return nil, err
 	}
-	return &camoufoxnative.ProtectedResponse{StatusCode: response.StatusCode, Header: response.Header, Body: response.Body}, nil
+	responseBody := response.Body
+	if responseBody != nil {
+		responseBody = &outputReadSourceBody{ReadCloser: responseBody}
+	}
+	return &camoufoxnative.ProtectedResponse{StatusCode: response.StatusCode, Header: response.Header, Body: responseBody}, nil
 }
 
 // StorageCookies 返回账户当前 Cookie，格式与 Camoufox storage.getCookies 导出一致

@@ -277,6 +277,7 @@ func (metadata *accessLogMetadata) snapshot() accessLogSnapshot {
 		queueWait: metadata.queueWait, proof: metadata.proof,
 		attempts: CloneRequestAttempts(metadata.attempts), ledger: metadata.ledger.WithUsage(metadata.usage), authorized: metadata.authorized,
 	}
+	snapshot.ledger.OutputTiming = outputTimingFromAttempts(metadata.attempts)
 	metadata.mu.Unlock()
 	return snapshot
 }
@@ -376,6 +377,7 @@ func AddAccessLogGenerationAttempt(ctx context.Context, attempt aistudio.Generat
 		Method: attempt.Method, Mode: attempt.Mode, Reason: attempt.Reason, Stage: attempt.Stage,
 		Sent: cloneLedgerValue(&attempt.Sent), ResponseReceived: cloneLedgerValue(&attempt.ResponseReceived), StatusCode: attempt.StatusCode,
 		Usage: cloneLedgerValue(attempt.Usage), UsageSource: attemptUsageSource(attempt.Usage, attempt.UsageSource),
+		OutputTiming: cloneLedgerValue(attempt.OutputTiming),
 	}
 	if value.Stage == "" {
 		value.Stage = "unknown"

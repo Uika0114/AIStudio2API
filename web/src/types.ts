@@ -281,6 +281,13 @@ export interface RequestAttempt {
 }
 
 export interface UsageRecord {
+  // Nullable ledger metadata; historical rows must remain unknown, not false or zero.
+  requested_model?: string
+  base_model?: string
+  output_tps?: number | null
+  anti_truncation?: boolean | null
+  usage_known?: boolean | null
+  usage_source?: string | null
   id: string
   time: string
   protocol: string

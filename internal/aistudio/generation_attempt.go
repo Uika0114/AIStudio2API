@@ -10,29 +10,30 @@ import (
 // attempt. Sent means the send boundary was entered, not proof of execution.
 // Repeated snapshots with the same ID update one attempt, not another request.
 type GenerationAttempt struct {
-	ID                string    `json:"id"`
-	Revision          uint64    `json:"revision"`
-	ContinuationRound int       `json:"continuation_round,omitempty"`
-	RequestID         string    `json:"request_id"`
-	ParentID          string    `json:"parent_id,omitempty"`
-	RequestedModel    string    `json:"requested_model"`
-	BaseModel         string    `json:"base_model"`
-	RequestedChannel  Channel   `json:"requested_channel,omitempty"`
-	Channel           Channel   `json:"channel"`
-	AntiTruncation    bool      `json:"anti_truncation,omitempty"`
-	AccountID         string    `json:"account_id"`
-	Method            string    `json:"method"`
-	Mode              string    `json:"mode"`
-	Reason            string    `json:"reason,omitempty"`
-	Stage             string    `json:"stage"`
-	Sent              bool      `json:"sent"`
-	ResponseReceived  bool      `json:"response_received"`
-	StatusCode        int       `json:"status_code,omitempty"`
-	DurationMS        int64     `json:"duration_ms"`
-	StartedAt         time.Time `json:"started_at"`
-	Error             string    `json:"error,omitempty"`
-	Usage             *Usage    `json:"usage,omitempty"`
-	UsageSource       string    `json:"usage_source"`
+	ID                string        `json:"id"`
+	Revision          uint64        `json:"revision"`
+	ContinuationRound int           `json:"continuation_round,omitempty"`
+	RequestID         string        `json:"request_id"`
+	ParentID          string        `json:"parent_id,omitempty"`
+	RequestedModel    string        `json:"requested_model"`
+	BaseModel         string        `json:"base_model"`
+	RequestedChannel  Channel       `json:"requested_channel,omitempty"`
+	Channel           Channel       `json:"channel"`
+	AntiTruncation    bool          `json:"anti_truncation,omitempty"`
+	AccountID         string        `json:"account_id"`
+	Method            string        `json:"method"`
+	Mode              string        `json:"mode"`
+	Reason            string        `json:"reason,omitempty"`
+	Stage             string        `json:"stage"`
+	Sent              bool          `json:"sent"`
+	ResponseReceived  bool          `json:"response_received"`
+	StatusCode        int           `json:"status_code,omitempty"`
+	DurationMS        int64         `json:"duration_ms"`
+	StartedAt         time.Time     `json:"started_at"`
+	Error             string        `json:"error,omitempty"`
+	Usage             *Usage        `json:"usage,omitempty"`
+	UsageSource       string        `json:"usage_source"`
+	OutputTiming      *OutputTiming `json:"-"` // internal evidence, not a new public attempt/CSV field
 }
 
 type generationAttemptObserverKey struct{}

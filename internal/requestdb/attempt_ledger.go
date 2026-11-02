@@ -8,6 +8,8 @@ import (
 
 // Keep requests at the release's 20 columns: its positional INSERT must remain
 // valid after a rollback. Historical/old-writer rows have no metadata row.
+const outputTimingJSONLimit = 16 << 10
+
 const requestMetadataSchema = `CREATE TABLE IF NOT EXISTS request_metadata (
  id TEXT PRIMARY KEY NOT NULL,
  requested_model TEXT, base_model TEXT, requested_channel TEXT, anti_truncation INTEGER,
@@ -40,6 +42,15 @@ func addAttemptLedger(db *sql.DB) (err error) {
 			return err
 		}
 	}
+	var hasOutputTiming int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('request_metadata') WHERE name='output_timing'`).Scan(&hasOutputTiming); err != nil {
+		return err
+	}
+	if hasOutputTiming == 0 {
+		if _, err := tx.Exec(`ALTER TABLE request_metadata ADD COLUMN output_timing TEXT`); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(deleteOrphanRequestMetadata); err != nil {
 		return err
 	}
@@ -57,10 +68,16 @@ func writeRequestMetadata(tx *sql.Tx, row *Row) error {
 		}
 		observations = string(encoded)
 	}
+	var outputTiming any
+	if row.OutputTiming != nil {
+		if encoded, encodeErr := json.Marshal(row.OutputTiming); encodeErr == nil && len(encoded) <= outputTimingJSONLimit {
+			outputTiming = string(encoded)
+		}
+	}
 	_, err := tx.Exec(`INSERT OR REPLACE INTO request_metadata
-	 (id,requested_model,base_model,requested_channel,anti_truncation,usage_known,usage_source,attempt_count,sent_attempt_count,anti_observations)
-	 VALUES (?,NULLIF(?,''),NULLIF(?,''),?,?,?,NULLIF(?,''),?,?,?)`,
+	 (id,requested_model,base_model,requested_channel,anti_truncation,usage_known,usage_source,attempt_count,sent_attempt_count,anti_observations,output_timing)
+	 VALUES (?,NULLIF(?,''),NULLIF(?,''),?,?,?,NULLIF(?,''),?,?,?,?)`,
 		row.ID, row.RequestedModel, row.BaseModel, row.RequestedChannel, row.AntiTruncation,
-		row.UsageKnown, row.UsageSource, row.AttemptCount, row.SentAttemptCount, observations)
+		row.UsageKnown, row.UsageSource, row.AttemptCount, row.SentAttemptCount, observations, outputTiming)
 	return err
 }

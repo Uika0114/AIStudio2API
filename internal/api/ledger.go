@@ -152,6 +152,7 @@ type RequestLedgerMetadata struct {
 	AttemptCount     *int                                 `json:"attempt_count"`
 	SentAttemptCount *int                                 `json:"sent_attempt_count"`
 	AntiObservations []aistudio.AntiTruncationObservation `json:"anti_observations"`
+	OutputTiming     *aistudio.OutputTiming               `json:"-"` // persisted evidence; only output_tps is public
 }
 
 const (
@@ -164,31 +165,32 @@ const (
 // RequestAttempt preserves old outer failure records alongside physical attempt
 // snapshots. Only kind=generation has send/response evidence. Channel is actual.
 type RequestAttempt struct {
-	Account           string          `json:"account"`
-	Channel           string          `json:"channel"`
-	Error             string          `json:"error"`
-	DurationMS        int64           `json:"duration_ms"`
-	Kind              string          `json:"kind"`
-	ID                string          `json:"id,omitempty"`
-	Revision          uint64          `json:"revision,omitempty"`
-	ContinuationRound int             `json:"continuation_round,omitempty"`
-	RequestID         string          `json:"request_id,omitempty"`
-	ParentID          string          `json:"parent_id,omitempty"`
-	RequestedModel    string          `json:"requested_model,omitempty"`
-	BaseModel         string          `json:"base_model,omitempty"`
-	RequestedChannel  *string         `json:"requested_channel"`
-	AntiTruncation    *bool           `json:"anti_truncation"`
-	AccountID         string          `json:"account_id,omitempty"`
-	Method            string          `json:"method,omitempty"`
-	Mode              string          `json:"mode,omitempty"`
-	Reason            string          `json:"reason,omitempty"`
-	Stage             string          `json:"stage"`
-	Sent              *bool           `json:"sent"`
-	ResponseReceived  *bool           `json:"response_received"`
-	StatusCode        int             `json:"status_code,omitempty"`
-	StartedAt         *time.Time      `json:"started_at,omitempty"`
-	Usage             *aistudio.Usage `json:"usage"`
-	UsageSource       string          `json:"usage_source"`
+	Account           string                 `json:"account"`
+	Channel           string                 `json:"channel"`
+	Error             string                 `json:"error"`
+	DurationMS        int64                  `json:"duration_ms"`
+	Kind              string                 `json:"kind"`
+	ID                string                 `json:"id,omitempty"`
+	Revision          uint64                 `json:"revision,omitempty"`
+	ContinuationRound int                    `json:"continuation_round,omitempty"`
+	RequestID         string                 `json:"request_id,omitempty"`
+	ParentID          string                 `json:"parent_id,omitempty"`
+	RequestedModel    string                 `json:"requested_model,omitempty"`
+	BaseModel         string                 `json:"base_model,omitempty"`
+	RequestedChannel  *string                `json:"requested_channel"`
+	AntiTruncation    *bool                  `json:"anti_truncation"`
+	AccountID         string                 `json:"account_id,omitempty"`
+	Method            string                 `json:"method,omitempty"`
+	Mode              string                 `json:"mode,omitempty"`
+	Reason            string                 `json:"reason,omitempty"`
+	Stage             string                 `json:"stage"`
+	Sent              *bool                  `json:"sent"`
+	ResponseReceived  *bool                  `json:"response_received"`
+	StatusCode        int                    `json:"status_code,omitempty"`
+	StartedAt         *time.Time             `json:"started_at,omitempty"`
+	Usage             *aistudio.Usage        `json:"usage"`
+	UsageSource       string                 `json:"usage_source"`
+	OutputTiming      *aistudio.OutputTiming `json:"-"`
 }
 
 // UnmarshalJSON marks old four-field JSON explicitly unknown without rewriting
@@ -234,6 +236,7 @@ func CloneRequestAttempts(attempts []RequestAttempt) []RequestAttempt {
 		result[i].ResponseReceived = cloneLedgerValue(result[i].ResponseReceived)
 		result[i].StartedAt = cloneLedgerValue(result[i].StartedAt)
 		result[i].Usage = cloneLedgerValue(result[i].Usage)
+		result[i].OutputTiming = cloneLedgerValue(result[i].OutputTiming)
 	}
 	return result
 }
@@ -252,6 +255,7 @@ func (metadata RequestLedgerMetadata) Clone() RequestLedgerMetadata {
 	metadata.UsageKnown = cloneLedgerValue(metadata.UsageKnown)
 	metadata.AttemptCount = cloneLedgerValue(metadata.AttemptCount)
 	metadata.SentAttemptCount = cloneLedgerValue(metadata.SentAttemptCount)
+	metadata.OutputTiming = cloneLedgerValue(metadata.OutputTiming)
 	metadata.AntiObservations = slices.Clone(metadata.AntiObservations)
 	for i := range metadata.AntiObservations {
 		metadata.AntiObservations[i] = metadata.AntiObservations[i].Clone()
@@ -308,6 +312,7 @@ func decodeUsageCursor(value string) (*UsageCursor, error) {
 // UsageRecord 是一条已完成请求的账本记录
 type UsageRecord struct {
 	RequestLedgerMetadata
+	OutputTPS       *float64         `json:"output_tps"`
 	ID              string           `json:"id"`
 	Time            time.Time        `json:"time"`
 	Protocol        string           `json:"protocol"`

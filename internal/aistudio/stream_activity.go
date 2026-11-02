@@ -28,6 +28,10 @@ func observeStreamActivity(ctx context.Context, source io.Reader) io.Reader {
 	return &streamActivityReader{source: source, notify: observer}
 }
 
+func (reader *streamActivityReader) OutputReadSourceKnown() bool {
+	return knownOutputReadSource(reader.source)
+}
+
 func (reader *streamActivityReader) Read(buffer []byte) (int, error) {
 	count, err := reader.source.Read(buffer)
 	if count > 0 {

@@ -25,6 +25,7 @@ type physicalAttempt struct {
 	channel  Channel
 	terminal bool
 	anti     *antiObservation
+	output   *outputWindow
 }
 
 func generationRPCChannel(method string) Channel {
@@ -73,6 +74,7 @@ func beginPhysicalAttempt(ctx context.Context, request GenerateRequest, rpc RPCR
 		AntiTruncation: request.Selection.AntiTruncation, AccountID: accountID, Method: rpc.Method, Mode: mode,
 		Reason: reason, ContinuationRound: request.continuationRound, Stage: "preparing", StartedAt: now, UsageSource: "unknown",
 	}}
+	attempt.output = newOutputWindow(ctx, attempt.value)
 	attempt.update(func(*GenerationAttempt) {})
 	return context.WithValue(ctx, physicalAttemptKey{}, attempt), attempt
 }
@@ -86,6 +88,7 @@ func (attempt *physicalAttempt) update(change func(*GenerationAttempt)) {
 	attempt.value.Revision++
 	attempt.value.DurationMS = time.Since(attempt.value.StartedAt).Milliseconds()
 	snapshot := attempt.value
+	snapshot.OutputTiming = attempt.output.snapshot()
 	if snapshot.Usage != nil {
 		copied := *snapshot.Usage
 		snapshot.Usage = &copied
@@ -122,6 +125,7 @@ func (attempt *physicalAttempt) attach(response *RPCResponse) *RPCResponse {
 		value.StatusCode = response.StatusCode
 		value.Stage = "response"
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			attempt.output.finish(false)
 			attempt.terminal = true
 			value.Stage = "http_error"
 			value.Error = fmt.Sprintf("upstream HTTP %d", response.StatusCode)
@@ -145,6 +149,7 @@ func (attempt *physicalAttempt) fail(err error) {
 		if attempt.terminal && !(value.Stage == "upstream_finished" && upstreamFailure) {
 			return
 		}
+		attempt.output.finish(false)
 		attempt.terminal = true
 		value.Stage = "failed"
 		if !value.Sent {
@@ -170,6 +175,7 @@ func (attempt *physicalAttempt) observe(event Event) {
 	if attempt == nil {
 		return
 	}
+	attempt.output.noteEvent(event)
 	attempt.anti.raw(attempt.value.ID, event)
 	switch event.Kind {
 	case EventUsage:
@@ -225,6 +231,10 @@ type physicalAttemptBody struct {
 	closeErr error
 }
 
+func (body *physicalAttemptBody) OutputReadSourceKnown() bool {
+	return knownOutputReadSource(body.ReadCloser)
+}
+
 func (body *physicalAttemptBody) Read(buffer []byte) (int, error) {
 	n, err := body.ReadCloser.Read(buffer)
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -241,6 +251,7 @@ func (body *physicalAttemptBody) Close() error {
 		} else if body.closeErr != nil {
 			body.attempt.fail(body.closeErr)
 		}
+		body.attempt.output.ensureEnded()
 		body.attempt.update(func(value *GenerationAttempt) {
 			if !body.attempt.terminal {
 				value.Stage = "closed"

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 )
 
@@ -19,7 +20,7 @@ import (
 const recordColumns = `r.id, r.time, r.protocol, r.path, r.model, r.account, r.channel, r.status, r.state,
  r.duration_ms, r.first_event_ms, r.queue_ms, r.input_tokens, r.cached_tokens, r.reasoning_tokens, r.reply_tokens, r.total_tokens,
  r.tool_calls, r.error, r.attempts, EXISTS(SELECT 1 FROM bodies b WHERE b.id = r.id),
- m.requested_model, m.base_model, m.requested_channel, m.anti_truncation, m.usage_known, m.usage_source, m.attempt_count, m.sent_attempt_count, m.anti_observations`
+ m.requested_model, m.base_model, m.requested_channel, m.anti_truncation, m.usage_known, m.usage_source, m.attempt_count, m.sent_attempt_count, m.anti_observations, m.output_timing`
 
 const recordTables = ` FROM requests r LEFT JOIN request_metadata m ON m.id = r.id`
 
@@ -45,12 +46,12 @@ func scanRecord(rows *sql.Rows) (api.UsageRecord, error) {
 	var record api.UsageRecord
 	var at int64
 	var attempts string
-	var requestedModel, baseModel, usageSource, observations sql.NullString
+	var requestedModel, baseModel, usageSource, observations, outputTiming sql.NullString
 	err := rows.Scan(&record.ID, &at, &record.Protocol, &record.Path, &record.Model, &record.Account, &record.Channel,
 		&record.Status, &record.State, &record.DurationMS, &record.FirstEventMS, &record.QueueMS, &record.InputTokens, &record.CachedTokens,
 		&record.ReasoningTokens, &record.ReplyTokens, &record.TotalTokens, &record.ToolCalls, &record.Error, &attempts, &record.HasBody,
 		&requestedModel, &baseModel, &record.RequestedChannel, &record.AntiTruncation, &record.UsageKnown, &usageSource,
-		&record.AttemptCount, &record.SentAttemptCount, &observations)
+		&record.AttemptCount, &record.SentAttemptCount, &observations, &outputTiming)
 	if err != nil {
 		return record, err
 	}
@@ -69,6 +70,13 @@ func scanRecord(rows *sql.Rows) (api.UsageRecord, error) {
 			return record, err
 		}
 	}
+	if outputTiming.Valid && len(outputTiming.String) <= outputTimingJSONLimit {
+		var timing aistudio.OutputTiming
+		if err := json.Unmarshal([]byte(outputTiming.String), &timing); err == nil {
+			record.OutputTiming = &timing
+		}
+	}
+	record.OutputTPS = record.ObservedOutputTPS()
 	return record, nil
 }
 
