@@ -452,7 +452,7 @@ type buildResponse struct {
 		BlockReasonMessage string `json:"blockReasonMessage"`
 	} `json:"promptFeedback"`
 	UsageMetadata *struct {
-		PromptTokenCount        int64  `json:"promptTokenCount"`
+		PromptTokenCount        *int64 `json:"promptTokenCount"`
 		CandidatesTokenCount    *int64 `json:"candidatesTokenCount"`
 		TotalTokenCount         *int64 `json:"totalTokenCount"`
 		CachedContentTokenCount int64  `json:"cachedContentTokenCount"`
@@ -506,19 +506,18 @@ var buildChunkSources = map[string]string{"web": "web", "retrievedContext": "ret
 
 // BuildStreamDecoder 把 Build 代理返回的 Gemini API 响应块转换为规范事件
 type BuildStreamDecoder struct {
-	output          *outputDecoderTiming
-	outputCount     int64
-	outputKnown     bool
-	outputReasoning *int64
-	observe         func(Event)
-	usage           *Usage
-	finished        bool
+	output           *generationDecoderTiming
+	generationCounts *GenerationCounts
+	observe          func(Event)
+	usage            *Usage
+	finished         bool
 }
 
 // Decode 解码一个 Gemini API GenerateContentResponse JSON
 func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
-	d.outputCount, d.outputKnown, d.outputReasoning = 0, false, nil
+	d.generationCounts = nil
 	events, err := d.decode(raw)
+	d.output.observe(events, d.generationCounts, err)
 	if d.observe != nil {
 		if d.usage != nil {
 			d.observe(Event{Kind: EventUsage, Usage: d.usage})
@@ -529,7 +528,6 @@ func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
 			}
 		}
 	}
-	d.output.observe(events, d.outputCount, d.outputKnown, d.outputReasoning, err)
 	return events, err
 }
 
@@ -539,16 +537,30 @@ func (d *BuildStreamDecoder) decode(raw []byte) ([]Event, error) {
 		return nil, &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$chunk", Detail: err.Error(), Raw: cloneRaw(raw)}
 	}
 	if d.output != nil && response.UsageMetadata != nil {
-		d.outputReasoning = response.UsageMetadata.ThoughtsTokenCount
-		if response.UsageMetadata.CandidatesTokenCount != nil {
-			d.outputCount, d.outputKnown = *response.UsageMetadata.CandidatesTokenCount, true
+		m := response.UsageMetadata
+		c := &GenerationCounts{ToolPrompt: m.ToolUsePromptTokenCount}
+		if m.PromptTokenCount != nil {
+			c.Input, c.InputKnown = *m.PromptTokenCount, true
 		}
+		if m.CandidatesTokenCount != nil {
+			c.Output, c.OutputKnown = *m.CandidatesTokenCount, true
+		}
+		if m.ThoughtsTokenCount != nil {
+			c.Reasoning, c.ReasoningKnown = *m.ThoughtsTokenCount, true
+		}
+		if m.TotalTokenCount != nil {
+			c.Total, c.TotalKnown = *m.TotalTokenCount, true
+		}
+		d.generationCounts = c
 	}
 	if response.UsageMetadata != nil && response.UsageMetadata.TotalTokenCount != nil {
 		metadata := response.UsageMetadata
 		usage := Usage{
-			InputTokens: metadata.PromptTokenCount, CachedTokens: metadata.CachedContentTokenCount,
-			ToolTokens: metadata.ToolUsePromptTokenCount, TotalTokens: *metadata.TotalTokenCount,
+			CachedTokens: metadata.CachedContentTokenCount,
+			ToolTokens:   metadata.ToolUsePromptTokenCount, TotalTokens: *metadata.TotalTokenCount,
+		}
+		if metadata.PromptTokenCount != nil {
+			usage.InputTokens = *metadata.PromptTokenCount
 		}
 		if metadata.ThoughtsTokenCount != nil {
 			usage.ReasoningTokens = *metadata.ThoughtsTokenCount
@@ -719,7 +731,7 @@ func decodeBuildGrounding(value buildGrounding) *GroundingMetadata {
 
 // DecodeBuildStream 解码 ProxyStreamedCall 响应：field 1 为 [["<JSON>"]...]，其后可带 google.rpc 状态
 func DecodeBuildStream(source io.Reader, decoder *BuildStreamDecoder, emit func(Event) error) error {
-	stream := json.NewDecoder(newSparseJSONReader(source, decoder.output))
+	stream := json.NewDecoder(newSparseJSONReader(source))
 	stream.UseNumber()
 	if token, err := stream.Token(); err != nil || token != json.Delim('[') {
 		return &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$", Detail: "根值不是数组"}
@@ -735,7 +747,6 @@ func DecodeBuildStream(source io.Reader, decoder *BuildStreamDecoder, emit func(
 		if err := stream.Decode(&raw); err != nil {
 			return &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: fmt.Sprintf("$[0][%d]", index), Detail: err.Error()}
 		}
-		decoder.output.frameRange(stream.InputOffset(), len(raw))
 		chunk, err := buildProxyResponseBody(raw, fmt.Sprintf("$[0][%d]", index))
 		if err != nil {
 			return err
@@ -753,7 +764,6 @@ func DecodeBuildStream(source io.Reader, decoder *BuildStreamDecoder, emit func(
 	if token, err := stream.Token(); err != nil || token != json.Delim(']') {
 		return &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$[0]", Detail: "响应列表没有正常结束"}
 	}
-	decoder.output.stopMapping()
 	for stream.More() {
 		var raw json.RawMessage
 		if err := stream.Decode(&raw); err != nil {
@@ -778,13 +788,10 @@ func DecodeBuildStream(source io.Reader, decoder *BuildStreamDecoder, emit func(
 
 // DecodeBuildUnary 解码 ProxyUnaryCall 响应：field 1 为一个 Gemini API GenerateContentResponse JSON
 func DecodeBuildUnary(source io.Reader, decoder *BuildStreamDecoder, emit func(Event) error) error {
-	raw, err := io.ReadAll(source)
-	if err != nil {
-		return fmt.Errorf("读取 AI Studio %s: %w", buildProxyUnaryMethod, err)
-	}
-	decoded, err := decodeJSONValue(raw)
-	if err != nil {
-		return &ProtocolEvidenceError{Method: buildProxyUnaryMethod, Path: "$", Detail: err.Error(), Raw: cloneRaw(raw)}
+	stream := json.NewDecoder(newSparseJSONReader(source))
+	var decoded json.RawMessage
+	if err := stream.Decode(&decoded); err != nil {
+		return &ProtocolEvidenceError{Method: buildProxyUnaryMethod, Path: "$", Detail: err.Error()}
 	}
 	content, err := buildProxyResponseBody(decoded, "$")
 	if err != nil {
@@ -793,6 +800,13 @@ func DecodeBuildUnary(source io.Reader, decoder *BuildStreamDecoder, emit func(E
 	events, err := decoder.Decode(content)
 	if err != nil {
 		return err
+	}
+	var extra json.RawMessage
+	if err := stream.Decode(&extra); err != io.EOF {
+		return &ProtocolEvidenceError{Method: buildProxyUnaryMethod, Path: "$", Detail: "响应后存在额外或损坏数据"}
+	}
+	if decoder.output != nil {
+		decoder.output.complete = true
 	}
 	for _, event := range events {
 		if err := emit(event); err != nil {
@@ -897,9 +911,7 @@ func (c *Client) sendBuildMode(ctx context.Context, request GenerateRequest, ent
 		return nil, nil, err
 	}
 	decoder := &BuildStreamDecoder{observe: func(event Event) { response.attempt.observe(event); reportRawGenerationEvent(ctx, event) }}
-	if !unary {
-		decoder.output = response.attempt.outputDecoder()
-	}
+	decoder.output = response.attempt.outputDecoder()
 	if unary {
 		return response, func(source io.Reader, emit func(Event) error) error {
 			err := DecodeBuildUnary(source, decoder, emit)

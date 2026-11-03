@@ -17,7 +17,8 @@ func fixtureOutputAttempt(id, purpose string) RequestAttempt {
 			Version: aistudio.OutputTimingVersion, Method: aistudio.OutputTimingMethod,
 			AttemptID: id, RequestID: "fixture/reused-id", LifecycleID: "fixture/lifetime", Purpose: purpose,
 			Status: aistudio.OutputTimingMeasured, Complete: true, Terminal: true, HasOutput: true,
-			ProgressBatches: 3, StartOutputTokens: 100, EndOutputTokens: 620,
+			GeneratedTokens: 520, CountSource: "output_plus_reasoning",
+			Counts:      aistudio.GenerationCounts{Output: 420, Reasoning: 100, OutputKnown: true, ReasoningKnown: true},
 			TokenSource: "upstream", DurationMS: 8000,
 		},
 	}
@@ -29,9 +30,13 @@ func TestOutputTimingRootProjection(t *testing.T) {
 	prior := fixtureOutputAttempt("rejected-before-output", "reply")
 	prior.OutputTiming.HasOutput = false
 	prior.OutputTiming.Status = aistudio.OutputTimingIncomplete
-	prior.Error = "fixture rejection"
+	prior.Error = "upstream HTTP 429"
+	prior.StatusCode, prior.Stage = 429, "http_error"
+	notSent := false
+	preparing := RequestAttempt{Kind: AttemptKindGeneration, Sent: &notSent, Stage: "preparation_failed", Error: "fixture preparation"}
+	ack := RequestAttempt{Kind: "authentication_ack", DurationMS: 90000}
 	legacy := RequestAttempt{Kind: AttemptKindLegacy, Usage: &aistudio.Usage{OutputTokens: 500}}
-	got := outputTimingFromAttempts([]RequestAttempt{summary, prior, legacy, main})
+	got := outputTimingFromAttempts([]RequestAttempt{summary, prior, preparing, ack, legacy, main})
 	if got == nil || got.TPS() == nil || *got.TPS() != 65 || got.AttemptID != main.ID {
 		t.Fatalf("root did not select only the final reply: %+v", got)
 	}

@@ -20,16 +20,14 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/requestdb"
 )
 
-// This fixture explicitly models a Go source-read lineage. It does not make an
-// external request, start a browser or load an installed account/profile.
+// Native response fixtures have no source-read marker or batch prerequisite.
+// They never make an external request, start a browser or load a real profile.
 type outputHTTPBody struct {
 	chunks        [][]byte
 	index, offset int
-	trusted       bool
 	onClose       context.CancelFunc
 }
 
-func (body *outputHTTPBody) OutputReadSourceKnown() bool { return body.trusted }
 func (body *outputHTTPBody) Close() error {
 	if body.onClose != nil {
 		body.onClose()
@@ -42,7 +40,7 @@ func (body *outputHTTPBody) Read(destination []byte) (int, error) {
 	}
 	// Distinct synthetic deliveries must not collapse into the same platform
 	// clock tick. This is a fixture delay, not a product minimum-window rule.
-	if body.index > 0 && body.offset == 0 {
+	if body.offset == 0 {
 		time.Sleep(2 * time.Millisecond)
 	}
 	count := copy(destination, body.chunks[body.index][body.offset:])
@@ -85,7 +83,7 @@ func (p *outputHTTPPreparer) SendProtected(context.Context, aistudio.ProtectedRe
 			}
 			response := map[string]any{"candidates": []any{candidate}}
 			if withCount {
-				response["usageMetadata"] = map[string]any{"promptTokenCount": 1000, "candidatesTokenCount": count, "thoughtsTokenCount": 77, "totalTokenCount": 1077 + count}
+				response["usageMetadata"] = map[string]any{"promptTokenCount": 1000, "candidatesTokenCount": count, "thoughtsTokenCount": 100, "totalTokenCount": 1100 + count}
 			}
 			inner, _ := json.Marshal(response)
 			outer, _ := json.Marshal([]any{string(inner)})
@@ -103,14 +101,14 @@ func (p *outputHTTPPreparer) SendProtected(context.Context, aistudio.ProtectedRe
 		candidate := []any{[]any{[]any{part}, "model"}, end}
 		var usage any
 		if withCount {
-			usage = []any{1000, count, 1077 + count, 0, nil, nil, nil, nil, nil, 77}
+			usage = []any{1000, count, 1100 + count, 0, nil, nil, nil, nil, nil, 100}
 		}
 		encoded, _ := json.Marshal([]any{[]any{candidate}, nil, usage})
 		return encoded
 	}
 	var chunks [][]byte
 	if p.build && p.unary {
-		chunks = [][]byte{frame("visible-fixture", 620, p.scenario != "missing_count", true, p.scenario == "atomic_anti")}
+		chunks = [][]byte{frame("visible-fixture", 420, p.scenario != "missing_count", true, p.scenario == "atomic_anti")}
 		if p.scenario == "broken" {
 			chunks[0] = chunks[0][:len(chunks[0])-1]
 		}
@@ -118,9 +116,9 @@ func (p *outputHTTPPreparer) SendProtected(context.Context, aistudio.ProtectedRe
 		if p.name == "" {
 			return nil, errors.New("fixture expected an injected transport tool")
 		}
-		chunks = [][]byte{append(append([]byte("[["), frame("visible-fixture", 620, true, true, true)...), []byte("]]")...)}
+		chunks = [][]byte{append(append([]byte("[["), frame("visible-fixture", 420, true, true, true)...), []byte("]]")...)}
 	} else {
-		first, last := frame("visible-", 100, true, false, false), frame("fixture", 620, p.scenario != "missing_count", true, false)
+		first, last := frame("visible-", 100, true, false, false), frame("fixture", 420, p.scenario != "missing_count", true, false)
 		chunks = [][]byte{append(append([]byte("[["), first...), ','), append(last, []byte("]]")...)}
 		if p.scenario == "single" {
 			chunks = [][]byte{append(chunks[0], chunks[1]...)}
@@ -129,7 +127,7 @@ func (p *outputHTTPPreparer) SendProtected(context.Context, aistudio.ProtectedRe
 			chunks[1] = chunks[1][:len(chunks[1])-2]
 		}
 	}
-	return &aistudio.RPCResponse{StatusCode: 200, Header: http.Header{"Content-Type": []string{aistudio.JSONProtobufContentType}}, Body: &outputHTTPBody{chunks: chunks, trusted: p.scenario != "untrusted", onClose: p.cancelAfterDecode}}, nil
+	return &aistudio.RPCResponse{StatusCode: 200, Header: http.Header{"Content-Type": []string{aistudio.JSONProtobufContentType}}, Body: &outputHTTPBody{chunks: chunks, onClose: p.cancelAfterDecode}}, nil
 }
 
 func newOutputHTTPFixture(t *testing.T, channel aistudio.Channel, scenario string) (*antiLedgerService, *outputHTTPPreparer) {
@@ -200,7 +198,7 @@ func TestOutputTimingClientHTTPColdLedger(t *testing.T) {
 	for _, channel := range []aistudio.Channel{aistudio.ChannelPlayground, aistudio.ChannelBuild} {
 		for _, stream := range []bool{false, true} {
 			for _, protocol := range []string{"chat", "responses", "gemini"} {
-				for _, scenario := range []string{"measured", "single", "untrusted", "missing_count", "atomic_anti", "fallback_anti", "broken", "auto_compaction", "cancel_after_measurement"} {
+				for _, scenario := range []string{"measured", "single", "missing_count", "atomic_anti", "fallback_anti", "broken", "auto_compaction", "cancel_after_measurement"} {
 					if scenario == "auto_compaction" && protocol != "responses" {
 						continue
 					}
@@ -292,16 +290,36 @@ func TestOutputTimingClientHTTPColdLedger(t *testing.T) {
 						if scenario == "cancel_after_measurement" && row.State != "cancelled" {
 							t.Fatalf("late cancelled root misclassified: %+v", row)
 						}
-						want := (scenario == "measured" || scenario == "fallback_anti" || scenario == "auto_compaction") && (channel != aistudio.ChannelBuild || stream)
+						want := scenario != "missing_count" && scenario != "broken" && scenario != "cancel_after_measurement"
 						if want {
-							if row.OutputTPS == nil || row.OutputTiming == nil || row.OutputTiming.StartOutputTokens != 100 || row.OutputTiming.EndOutputTokens != 620 || row.OutputTiming.DurationMS <= 0 || *row.OutputTPS != 520000/row.OutputTiming.DurationMS {
+							if row.OutputTPS == nil || row.OutputTiming == nil || row.OutputTiming.GeneratedTokens != 520 || row.OutputTiming.Counts.Output != 420 || row.OutputTiming.Counts.Reasoning != 100 || row.OutputTiming.DurationMS <= 0 || *row.OutputTPS != 520000/row.OutputTiming.DurationMS {
 								t.Fatalf("real chain missing/wrong metric: %+v timing=%+v", row, row.OutputTiming)
 							}
 						} else if row.OutputTPS != nil {
 							t.Fatalf("unsupported/incomplete chain exposed TPS: %+v", row)
 						}
+						if scenario == "atomic_anti" {
+							observations := row.AntiObservations
+							if len(observations) != 1 || len(observations[0].Rounds) != 1 || observations[0].Rounds[0].Calls != 1 || observations[0].Rounds[0].Legal != 1 || !observations[0].Complete {
+								t.Fatalf("atomic emit must be called/unpacked once: %+v", observations)
+							}
+						}
 						if row.Model != "fixture-model" || row.RequestedModel != requested || row.ToolCalls != 0 {
 							t.Fatalf("metric changed model/tool accounting: %+v", row)
+						}
+						if want && (row.ReplyTokens != 420 || row.ReasoningTokens != 100 || row.TotalTokens != 1520) {
+							t.Fatalf("TPS changed billing/log count semantics: %+v", row)
+						}
+						coldHTTP := httptest.NewRecorder()
+						coldRequest := httptest.NewRequest("GET", "http://localhost/api/usage/records?from="+time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)+"&to="+time.Now().UTC().Add(time.Hour).Format(time.RFC3339), nil)
+						coldRequest.RemoteAddr = "127.0.0.1:12345"
+						api.NewHandler(service, api.Config{Ledger: store}).ServeHTTP(coldHTTP, coldRequest)
+						var coldPage api.UsageRecordPage
+						if coldHTTP.Code != 200 || json.Unmarshal(coldHTTP.Body.Bytes(), &coldPage) != nil || len(coldPage.Items) != 1 {
+							t.Fatalf("cold API: %d %s", coldHTTP.Code, coldHTTP.Body.String())
+						}
+						if (coldPage.Items[0].OutputTPS == nil) != (row.OutputTPS == nil) || row.OutputTPS != nil && *coldPage.Items[0].OutputTPS != *row.OutputTPS {
+							t.Fatal("cold API changed output_tps")
 						}
 						body, _ := json.Marshal(row)
 						if bytes.Contains(body, []byte("prompt-private-sentinel")) || bytes.Contains(body, []byte("visible-fixture")) || bytes.Contains(body, []byte("synthetic-not-a-credential")) || bytes.Contains(body, []byte(`"output_timing"`)) {

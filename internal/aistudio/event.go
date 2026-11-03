@@ -7,14 +7,12 @@ import (
 
 // FrameDecoder 将 field 1 repeated 帧转换为规范事件
 type FrameDecoder struct {
-	observe         func(Event) // complete-frame observation precedes output/stop projection
-	output          *outputDecoderTiming
-	outputCount     int64
-	outputKnown     bool
-	outputReasoning *int64
-	usage           *Usage
-	finished        bool
-	lastFrame       json.RawMessage
+	observe          func(Event) // complete-frame observation precedes output/stop projection
+	output           *generationDecoderTiming
+	generationCounts *GenerationCounts
+	usage            *Usage
+	finished         bool
+	lastFrame        json.RawMessage
 	// continuable 表示请求开启了自动续写
 	continuable bool
 	// continueAtMaxTokens 表示本轮输出上限低于请求的输出总上限
@@ -34,8 +32,9 @@ func NewFrameDecoder() *FrameDecoder {
 
 // Decode 解码一条 repeated 流帧
 func (d *FrameDecoder) Decode(raw json.RawMessage) ([]Event, error) {
-	d.outputCount, d.outputKnown, d.outputReasoning = 0, false, nil
+	d.generationCounts = nil
 	events, err := d.decode(raw)
+	d.output.observe(events, d.generationCounts, err)
 	if d.observe != nil {
 		if d.usage != nil {
 			d.observe(Event{Kind: EventUsage, Usage: d.usage})
@@ -46,7 +45,6 @@ func (d *FrameDecoder) Decode(raw json.RawMessage) ([]Event, error) {
 			}
 		}
 	}
-	d.output.observe(events, d.outputCount, d.outputKnown, d.outputReasoning, err)
 	return events, err
 }
 
@@ -60,7 +58,7 @@ func (d *FrameDecoder) decode(raw json.RawMessage) ([]Event, error) {
 		return nil, d.protocolError("$[0][]", "空流帧", raw)
 	}
 	if d.output != nil {
-		d.outputCount, d.outputKnown, d.outputReasoning = freshPGOutputCount(rawAt(frame, 2))
+		d.generationCounts = pgGenerationCounts(rawAt(frame, 2))
 	}
 	if isJSONNull(frame[0]) {
 		if feedbackRaw := rawAt(frame, 1); !isJSONNull(feedbackRaw) {
@@ -449,6 +447,35 @@ func decodeUsage(raw json.RawMessage, evidence json.RawMessage) (Usage, bool, er
 		InputTokens: input, CachedTokens: cached, OutputTokens: output, ReasoningTokens: reasoning,
 		ToolTokens: toolTokens, TotalTokens: total, OutputTokensMissing: outputMissing,
 	}, true, nil
+}
+
+// Read presence from the same raw PG snapshot; never use decodeUsage's defaults.
+func pgGenerationCounts(raw json.RawMessage) *GenerationCounts {
+	if isJSONNull(raw) {
+		return nil
+	}
+	var values []json.RawMessage
+	if json.Unmarshal(raw, &values) != nil {
+		return &GenerationCounts{Invalid: true}
+	}
+	c := &GenerationCounts{}
+	read := func(index int, dst *int64, known *bool) {
+		value := rawAt(values, index)
+		if !isJSONNull(value) {
+			if json.Unmarshal(value, dst) != nil {
+				c.Invalid = true
+			} else {
+				*known = true
+			}
+		}
+	}
+	read(0, &c.Input, &c.InputKnown)
+	read(1, &c.Output, &c.OutputKnown)
+	read(2, &c.Total, &c.TotalKnown)
+	read(9, &c.Reasoning, &c.ReasoningKnown)
+	var toolKnown bool
+	read(7, &c.ToolPrompt, &toolKnown)
+	return c
 }
 
 func (d *FrameDecoder) protocolError(path string, detail string, raw json.RawMessage) error {

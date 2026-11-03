@@ -3,7 +3,7 @@ package api
 import "github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 
 // outputTimingFromAttempts projects one reply's evidence without borrowing the
-// summary's window or combining candidate/continuation output. Existing attempt
+// summary's generation interval or combining candidate/continuation output. Existing attempt
 // upserts own ordering and de-duplication; this projection retains no new list.
 func outputTimingFromAttempts(attempts []RequestAttempt) *aistudio.OutputTiming {
 	var selected *aistudio.OutputTiming

@@ -21,7 +21,7 @@ func ledgerOutputTiming() *aistudio.OutputTiming {
 		Version: aistudio.OutputTimingVersion, Method: aistudio.OutputTimingMethod,
 		AttemptID: "fixture/physical", RequestID: "fixture/request", LifecycleID: "fixture/lifetime", Purpose: "reply",
 		Status: aistudio.OutputTimingMeasured, Complete: true, Terminal: true, HasOutput: true,
-		ProgressBatches: 2, StartOutputTokens: 100, EndOutputTokens: 620, TokenSource: "upstream", DurationMS: 8000,
+		GeneratedTokens: 520, CountSource: "output_plus_reasoning", Counts: aistudio.GenerationCounts{Output: 420, Reasoning: 100, OutputKnown: true, ReasoningKnown: true}, TokenSource: "upstream", DurationMS: 8000,
 	}
 }
 
@@ -158,5 +158,38 @@ func TestOutputTimingMalformedColdJSONAndAtomicFailure(t *testing.T) {
 	var count int
 	if err = store.db.QueryRow(`SELECT COUNT(*) FROM requests WHERE id='failed-transaction'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("partial primary row escaped transaction: %d %v", count, err)
+	}
+}
+
+func TestOutputTimingLegacyV1EvidenceColdRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-v1.db")
+	logger := func(level, message string) { t.Errorf("%s %s", level, message) }
+	store, err := Open(path, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	row := newLedgerFixtureRow("v1", at)
+	row.OutputTiming = &aistudio.OutputTiming{Version: 1, Method: "upstream_non_thinking_window_v1", AttemptID: "old", LifecycleID: "old-life", Purpose: "reply", Status: "measured", Complete: true, Terminal: true, HasOutput: true, ProgressBatches: 2, StartOutputTokens: 100, EndOutputTokens: 620, TokenSource: "upstream", DurationMS: 8000}
+	store.Record(row)
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	page, err := store.Records(context.Background(), api.UsageRecordQuery{From: at.Add(-time.Minute), To: at.Add(time.Minute), Limit: 10})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("legacy read %v %v", page, err)
+	}
+	got := page.Items[0]
+	if got.OutputTPS != nil || got.OutputTiming == nil || got.OutputTiming.Version != 1 || got.OutputTiming.EndOutputTokens != 620 || got.OutputTiming.ProgressBatches != 2 {
+		t.Fatalf("v1 evidence lost or reinterpreted: %+v", got)
+	}
+	data, _ := json.Marshal(got)
+	if !bytes.Contains(data, []byte(`"output_tps":null`)) {
+		t.Fatalf("v1 leaked old metric: %s", data)
 	}
 }

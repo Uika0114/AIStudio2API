@@ -25,7 +25,7 @@ type physicalAttempt struct {
 	channel  Channel
 	terminal bool
 	anti     *antiObservation
-	output   *outputWindow
+	output   *generationTiming
 }
 
 func generationRPCChannel(method string) Channel {
@@ -74,7 +74,7 @@ func beginPhysicalAttempt(ctx context.Context, request GenerateRequest, rpc RPCR
 		AntiTruncation: request.Selection.AntiTruncation, AccountID: accountID, Method: rpc.Method, Mode: mode,
 		Reason: reason, ContinuationRound: request.continuationRound, Stage: "preparing", StartedAt: now, UsageSource: "unknown",
 	}}
-	attempt.output = newOutputWindow(ctx, attempt.value)
+	attempt.output = newGenerationTiming(ctx, attempt.value)
 	attempt.update(func(*GenerationAttempt) {})
 	return context.WithValue(ctx, physicalAttemptKey{}, attempt), attempt
 }
@@ -106,6 +106,7 @@ func markPhysicalSend(ctx context.Context) {
 		return
 	}
 	attempt.update(func(value *GenerationAttempt) {
+		attempt.output.markSend()
 		value.Sent = true
 		value.Channel = attempt.channel
 		value.Stage = "sending"
@@ -229,10 +230,6 @@ type physicalAttemptBody struct {
 	attempt  *physicalAttempt
 	once     sync.Once
 	closeErr error
-}
-
-func (body *physicalAttemptBody) OutputReadSourceKnown() bool {
-	return knownOutputReadSource(body.ReadCloser)
 }
 
 func (body *physicalAttemptBody) Read(buffer []byte) (int, error) {
