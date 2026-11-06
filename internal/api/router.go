@@ -18,6 +18,7 @@ type Config struct {
 	AdminUsername    string
 	AdminPassword    string
 	Ledger           RequestLedger
+	Quota            QuotaService
 }
 
 type server struct {
@@ -97,6 +98,9 @@ func NewHandler(service aistudio.Service, config Config) http.Handler {
 		s.registerLedger(control)
 	}
 
+	if config.Quota != nil {
+		control.HandleFunc("GET /api/usage/quota", s.handleQuota)
+	}
 	root := http.NewServeMux()
 	root.Handle("GET /health", corsMiddleware(http.HandlerFunc(s.handleHealth)))
 	publicHandler := bodyLimitMiddleware(browserOriginMiddleware(config.APIKey, authMiddleware(config.APIKey, requestBodyMiddleware(config.Ledger, public))))

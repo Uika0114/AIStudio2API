@@ -1,8 +1,10 @@
+import { quotaZhCN } from './quota'
 // label 是语言选择器中的语言名称
 export const label = '简体中文'
 
 // messages 是界面文案与管理接口错误码文案，键集合由本表定义
 export const messages = {
+  ...quotaZhCN,
   'auth.username': '管理员账号',
   'auth.password': '密码',
   'auth.login': '登录',

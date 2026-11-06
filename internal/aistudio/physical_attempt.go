@@ -108,6 +108,9 @@ func markPhysicalSend(ctx context.Context) {
 	attempt.update(func(value *GenerationAttempt) {
 		attempt.output.markSend()
 		value.Sent = true
+		if value.SentAt.IsZero() {
+			value.SentAt = time.Now().UTC()
+		}
 		value.Channel = attempt.channel
 		value.Stage = "sending"
 	})
@@ -165,6 +168,7 @@ func (attempt *physicalAttempt) fail(err error) {
 			value.Stage = "timeout"
 			value.Error = "context deadline exceeded"
 		case errors.As(err, &rpcError):
+			value.RateLimited = value.RateLimited || rpcError.StatusCode == 429 || rpcError.Code == 429 || rpcError.Code == 8
 			value.Error = fmt.Sprintf("upstream RPC status=%d code=%d", rpcError.StatusCode, rpcError.Code)
 		default:
 			value.Error = fmt.Sprintf("%T", err)

@@ -71,6 +71,9 @@ func (p *outputHTTPPreparer) SendProtected(context.Context, aistudio.ProtectedRe
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
+	if p.scenario == "http429" {
+		return &aistudio.RPCResponse{StatusCode: 429, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[8,"synthetic limited"]`))}, nil
+	}
 	frame := func(text string, count int64, withCount, finish, atomic bool) []byte {
 		if p.build {
 			part := map[string]any{"text": text}
@@ -118,7 +121,7 @@ func (p *outputHTTPPreparer) SendProtected(context.Context, aistudio.ProtectedRe
 		}
 		chunks = [][]byte{append(append([]byte("[["), frame("visible-fixture", 420, true, true, true)...), []byte("]]")...)}
 	} else {
-		first, last := frame("visible-", 100, true, false, false), frame("fixture", 420, p.scenario != "missing_count", true, false)
+		first, last := frame("visible-", 100, p.scenario != "no_usage", false, false), frame("fixture", 420, p.scenario != "missing_count" && p.scenario != "no_usage", true, false)
 		chunks = [][]byte{append(append([]byte("[["), first...), ','), append(last, []byte("]]")...)}
 		if p.scenario == "single" {
 			chunks = [][]byte{append(chunks[0], chunks[1]...)}
@@ -130,8 +133,12 @@ func (p *outputHTTPPreparer) SendProtected(context.Context, aistudio.ProtectedRe
 	return &aistudio.RPCResponse{StatusCode: 200, Header: http.Header{"Content-Type": []string{aistudio.JSONProtobufContentType}}, Body: &outputHTTPBody{chunks: chunks, onClose: p.cancelAfterDecode}}, nil
 }
 
-func newOutputHTTPFixture(t *testing.T, channel aistudio.Channel, scenario string) (*antiLedgerService, *outputHTTPPreparer) {
+func newOutputHTTPFixture(t *testing.T, channel aistudio.Channel, scenario string, modelIDs ...string) (*antiLedgerService, *outputHTTPPreparer) {
 	t.Helper()
+	modelID := "fixture-model"
+	if len(modelIDs) > 0 {
+		modelID = modelIDs[0]
+	}
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "synthetic-state.json")
 	if err := os.WriteFile(statePath, []byte(`{"cookies":[{"name":"SAPISID","value":"synthetic-not-a-credential","domain":".google.com","path":"/","expires":-1,"secure":true}],"origins":[]}`), 0600); err != nil {
@@ -149,7 +156,7 @@ func newOutputHTTPFixture(t *testing.T, channel aistudio.Channel, scenario strin
 	if err = aistudio.WriteStorageState(statePath, state); err != nil {
 		t.Fatal(err)
 	}
-	model := aistudio.Model{ID: "fixture-model", Name: "fixture", Methods: []string{"generateContent", "countTokens"}, InputTokenLimit: 1048576, OutputTokenLimit: 32768, Capabilities: map[string]bool{"chat_model": true, "function_declarations": true}, Channels: []string{"playground", "build"}}
+	model := aistudio.Model{ID: modelID, Name: "fixture", Methods: []string{"generateContent", "countTokens"}, InputTokenLimit: 1048576, OutputTokenLimit: 32768, Capabilities: map[string]bool{"chat_model": true, "function_declarations": true}, Channels: []string{"playground", "build"}}
 	account := &aistudio.Account{ID: "fixture-account", Directory: dir, StoragePath: statePath, RuntimePath: filepath.Join(dir, "runtime.json"), StorageState: state, Config: aistudio.DefaultAccountConfig("fixture"), State: aistudio.AccountReady, Models: []aistudio.Model{model}}
 	account.Config.Enabled = true
 	pool := aistudio.NewAccountPool([]*aistudio.Account{account}, 1)
@@ -158,7 +165,7 @@ func newOutputHTTPFixture(t *testing.T, channel aistudio.Channel, scenario strin
 		t.Fatal(err)
 	}
 	catalog := make([]any, 65)
-	catalog[0], catalog[3], catalog[5], catalog[6], catalog[7], catalog[64] = "models/fixture-model", "fixture", 1048576, 32768, []any{"generateContent", "countTokens"}, []any{1, 10}
+	catalog[0], catalog[3], catalog[5], catalog[6], catalog[7], catalog[64] = "models/"+modelID, "fixture", 1048576, 32768, []any{"generateContent", "countTokens"}, []any{1, 10}
 	catalogBody, _ := json.Marshal([]any{[]any{catalog}})
 	plain, err := aistudio.NewMakerSuiteHTTPTransport(aistudio.HTTPTransportOptions{Pool: pool, Headers: aistudio.ProtocolHeaderProviderFunc(func(context.Context, string) (http.Header, error) {
 		return nil, errors.New("fixture external network forbidden")

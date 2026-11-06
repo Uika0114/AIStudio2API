@@ -1,3 +1,4 @@
+import { quotaZhCN } from './quota'
 import type { LogPhrase, TranslationKey } from './zh-CN'
 
 // label 是语言选择器中的语言名称
@@ -5,6 +6,7 @@ export const label = '繁體中文'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  ...quotaZhCN,
   'auth.username': '使用者名稱',
   'auth.password': '密碼',
   'auth.login': '登入',

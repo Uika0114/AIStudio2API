@@ -35,9 +35,10 @@ func (f antiAuxiliaryRPC) Do(ctx context.Context, r aistudio.RPCRequest) (*aistu
 // Scheduling, browser and external transports are not started.
 type antiLedgerService struct {
 	*aistudio.Client
-	pool    *aistudio.AccountPool
-	model   aistudio.Model
-	account string
+	pool          *aistudio.AccountPool
+	model         aistudio.Model
+	account       string
+	quotaObserver func(aistudio.GenerationAttempt)
 }
 
 func (s *antiLedgerService) Models(context.Context) ([]aistudio.Model, error) {
@@ -48,7 +49,7 @@ func (s *antiLedgerService) CountTokens(context.Context, aistudio.TokenCountRequ
 }
 func (s *antiLedgerService) Generate(ctx context.Context, r aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
 	api.SetAccessLogModelSelection(ctx, r.Selection)
-	ctx = observeGenerationMetadata(ctx, map[string]string{s.account: "fixture"})
+	ctx = observeGenerationMetadata(ctx, map[string]string{s.account: "fixture"}, s.quotaObserver)
 	lease, _, err := s.pool.TryAcquireFor(ctx, aistudio.AccountSelection{ModelID: r.Model, Method: "generateContent", Channel: r.Selection.Channel, StrictChannel: true})
 	if err != nil || lease == nil {
 		return nil, errors.New("fixture lease unavailable")

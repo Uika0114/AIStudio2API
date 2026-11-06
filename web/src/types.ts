@@ -403,3 +403,28 @@ export interface PlaygroundResult {
   durationMs: number
   status: number
 }
+
+export interface QuotaBalance {
+  limit: number | null
+  used: number | null
+  remaining: number | null
+}
+
+export interface QuotaAccountEstimate {
+  id: string
+  label: string
+  exhausted_429?: boolean
+  tokens: QuotaBalance
+  requests: QuotaBalance
+}
+
+export interface QuotaEstimateReport {
+  channel: 'playground'
+  model: 'gemini-4-argon'
+  period_from: string
+  reset_at: string
+  updated_at: string
+  tokens: QuotaBalance
+  requests: QuotaBalance
+  accounts?: QuotaAccountEstimate[]
+}

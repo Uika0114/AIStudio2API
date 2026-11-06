@@ -3336,7 +3336,7 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 	for _, account := range service.pool.Status() {
 		labels[account.ID] = account.Label
 	}
-	requestCtx = observeGenerationMetadata(requestCtx, labels)
+	requestCtx = observeGenerationMetadata(requestCtx, labels, service.requests.observeQuotaAttempt)
 	requestCtx = context.WithValue(requestCtx, remoteRecoveryRequestKey{}, request.ID)
 	service.requests.start(request, cancel)
 	if budget := request.Config.MaxOutputTokens; request.Selection.Channel == aistudio.ChannelAssistant && budget != nil && *budget > 0 {
@@ -3380,13 +3380,18 @@ func (service *trackedService) Generate(ctx context.Context, request aistudio.Ge
 }
 
 // observeGenerationMetadata binds both independent producers to the same HTTP root.
-func observeGenerationMetadata(ctx context.Context, labels map[string]string) context.Context {
+func observeGenerationMetadata(ctx context.Context, labels map[string]string, observers ...func(aistudio.GenerationAttempt)) context.Context {
 	ctx = aistudio.ContextWithGenerationAttemptObserver(ctx, func(attempt aistudio.GenerationAttempt) {
 		label := labels[attempt.AccountID]
 		if label == "" {
 			label = attempt.AccountID
 		}
 		api.AddAccessLogGenerationAttempt(ctx, attempt, label)
+		for _, observer := range observers {
+			if observer != nil {
+				observer(attempt)
+			}
+		}
 	})
 	return aistudio.ContextWithAntiTruncationObserver(ctx, func(value aistudio.AntiTruncationObservation) {
 		api.AddAccessLogAntiObservation(ctx, value)

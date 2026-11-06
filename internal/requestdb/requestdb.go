@@ -96,14 +96,23 @@ type Logger func(level string, message string)
 
 // Store 串行批量写入请求账本与汇总，并提供聚合与明细查询
 type Store struct {
-	db      *sql.DB
-	writes  chan write
-	done    chan struct{}
-	log     Logger
-	capture atomic.Bool
-	dropped atomic.Int64
-	mu      sync.RWMutex
-	closed  bool
+	db          *sql.DB
+	writes      chan write
+	done        chan struct{}
+	log         Logger
+	capture     atomic.Bool
+	dropped     atomic.Int64
+	mu          sync.RWMutex
+	closed      bool
+	quotaMu     sync.Mutex
+	quotaDB     *sql.DB
+	quotaDSN    string
+	quotaConn   *sql.Conn
+	quotaSince  time.Time
+	quotaEpoch  string
+	quotaGap    atomic.Int64
+	quotaWrites chan quotaWrite
+	quotaDone   chan struct{}
 }
 
 // Open 打开或创建账本数据库并启动写入协程
@@ -126,9 +135,12 @@ func Open(path string, log Logger) (*Store, error) {
 	if err := addAttemptLedger(db); err != nil {
 		return nil, errors.Join(fmt.Errorf("初始化请求账本: %w", err), db.Close())
 	}
-	store := &Store{db: db, writes: make(chan write, queueLimit), done: make(chan struct{}), log: log}
+	store := &Store{db: db, writes: make(chan write, queueLimit), done: make(chan struct{}), log: log, quotaDSN: "file:" + filepath.ToSlash(path) + "?" + options.Encode()}
 	if err := store.alignDays(); err != nil {
 		return nil, errors.Join(fmt.Errorf("重建本地日汇总: %w", err), db.Close())
+	}
+	if err := store.openQuota(); err != nil && store.log != nil {
+		store.log("WARN", "额度估算存储暂不可用；生成服务保持原行为")
 	}
 	go store.run()
 	return store, nil
@@ -162,8 +174,15 @@ func (store *Store) Close() error {
 	}
 	store.closed = true
 	close(store.writes)
+	if store.quotaWrites != nil {
+		close(store.quotaWrites)
+	}
 	store.mu.Unlock()
 	<-store.done
+	if store.quotaDone != nil {
+		<-store.quotaDone
+	}
+	store.closeQuota()
 	return store.db.Close()
 }
 

@@ -12,12 +12,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 	"github.com/Mag1cFall/AIStudio2API/internal/config"
+	"github.com/Mag1cFall/AIStudio2API/internal/requestdb"
 )
 
 // runtimeAdmin 投影运行时权威状态
@@ -46,6 +48,7 @@ type requestRegistry struct {
 	logs        []api.AdminLog
 	subscribers map[*eventSubscriber]struct{}
 	console     chan api.AdminLog
+	quota       atomic.Pointer[requestdb.Store]
 }
 
 type eventSubscriber struct {

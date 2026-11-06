@@ -26,6 +26,8 @@ type GenerationAttempt struct {
 	Reason            string        `json:"reason,omitempty"`
 	Stage             string        `json:"stage"`
 	Sent              bool          `json:"sent"`
+	SentAt            time.Time     `json:"-"`
+	RateLimited       bool          `json:"-"`
 	ResponseReceived  bool          `json:"response_received"`
 	StatusCode        int           `json:"status_code,omitempty"`
 	DurationMS        int64         `json:"duration_ms"`

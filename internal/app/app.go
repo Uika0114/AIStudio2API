@@ -77,6 +77,7 @@ func runCommand(args []string, logs *logOutput) error {
 	}
 	ledger.SetBodyCapture(cfg.RequestBodyLog)
 	manager.ledger = ledger
+	manager.requests.quota.Store(ledger)
 	manager.logs = logs
 	return errors.Join(runServer(ctx, cfg, options, manager), manager.Close(), ledger.Close())
 }
@@ -130,6 +131,7 @@ func runServer(ctx context.Context, cfg config.Config, options commandOptions, m
 	apiHandler := api.NewHandler(manager, api.Config{
 		APIKey: cfg.ProxyAPIKey, Admin: manager, Ledger: manager.ledger,
 		AdminAuthEnabled: cfg.AdminAuthEnabled, AdminUsername: cfg.AdminUsername, AdminPassword: cfg.AdminPassword,
+		Quota: manager,
 	})
 	server := &http.Server{
 		Handler:           rootHandler(apiHandler),

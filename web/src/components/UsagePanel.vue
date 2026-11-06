@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
-import type { Model, UsageDimension, UsageReport, UsageStats } from '@/types'
+import type { Model, QuotaEstimateReport, UsageDimension, UsageReport, UsageStats } from '@/types'
 import UiIcon from './UiIcon.vue'
 import UiSelect from './UiSelect.vue'
 import FilterMenu from './usage/FilterMenu.vue'
@@ -11,6 +11,7 @@ import RangePicker from './usage/RangePicker.vue'
 import RankingTable from './usage/RankingTable.vue'
 import RecordsTable from './usage/RecordsTable.vue'
 import UsageCharts from './usage/UsageCharts.vue'
+import QuotaBars from './usage/QuotaBars.vue'
 import { useUsageFormat } from './usage/format'
 import {
   dimensions,
@@ -29,6 +30,34 @@ const { t, errorText } = useI18n()
 const { compact, integer, usd, percent, duration, dateTime, clock, ago, dimensionLabel } =
   useUsageFormat()
 const state = useUsageState()
+const quotaReport = shallowRef<QuotaEstimateReport | null>(null)
+const quotaError = ref('')
+let quotaController: AbortController | undefined
+let quotaLoading = false
+let quotaFetchedAt = 0
+
+async function loadQuota(): Promise<void> {
+  quotaController?.abort()
+  const current = new AbortController()
+  quotaController = current
+  quotaLoading = true
+  try {
+    const value = await api.quotaEstimate(current.signal)
+    if (value.channel !== 'playground' || value.model !== 'gemini-4-argon')
+      throw new Error(t('quota.unavailable'))
+    quotaReport.value = value
+    quotaError.value = ''
+  } catch (reason) {
+    if (current.signal.aborted) return
+    quotaReport.value = null
+    quotaError.value = errorText(reason)
+  } finally {
+    if (quotaController === current) {
+      quotaLoading = false
+      quotaFetchedAt = Date.now()
+    }
+  }
+}
 
 // filterOptions 返回筛选候选，模型按模型目录顺序排列，目录外的取值排在最后
 function filterOptions(dimension: UsageDimension): string[] {
@@ -105,6 +134,7 @@ async function load(): Promise<void> {
 // refresh 立即刷新报告与请求记录
 function refresh(): void {
   void load()
+  void loadQuota()
   recordsRefresh.value++
 }
 
@@ -125,6 +155,14 @@ function tick(): void {
     now.value - updatedAt.value >= autoRefresh.value * 1000
   )
     refresh()
+  else if (
+    autoRefresh.value > 0 &&
+    document.visibilityState === 'visible' &&
+    !quotaLoading &&
+    quotaFetchedAt > 0 &&
+    now.value - quotaFetchedAt >= autoRefresh.value * 1000
+  )
+    void loadQuota()
 }
 
 // resume 页面重新可见时补一次过期的刷新
@@ -134,11 +172,13 @@ function resume(): void {
 
 onMounted(() => {
   void load()
+  void loadQuota()
   clockTimer = window.setInterval(tick, 1000)
   document.addEventListener('visibilitychange', resume)
 })
 onUnmounted(() => {
   controller?.abort()
+  quotaController?.abort()
   window.clearInterval(clockTimer)
   document.removeEventListener('visibilitychange', resume)
 })
@@ -399,7 +439,6 @@ const statusOptions = computed(() =>
         </button>
       </div>
     </header>
-
     <div
       class="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-line bg-canvas/95 px-4 py-2.5 backdrop-blur md:px-8"
       role="toolbar"
@@ -470,6 +509,11 @@ const statusOptions = computed(() =>
         </button>
       </div>
 
+      <QuotaBars
+        v-if="status === 'error'"
+        :report="quotaReport"
+        :error="quotaError"
+      />
       <template v-if="status === 'loading'">
         <div
           class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6"
@@ -499,6 +543,11 @@ const statusOptions = computed(() =>
 
       <template v-else-if="report !== null">
         <div class="space-y-4" :aria-busy="loading">
+          <QuotaBars
+            v-if="report.totals.requests === 0"
+            :report="quotaReport"
+            :error="quotaError"
+          />
           <div
             v-if="report.totals.requests === 0"
             class="flex flex-col items-center justify-center rounded-lg border border-dashed border-line px-6 py-20 text-center"
@@ -536,6 +585,7 @@ const statusOptions = computed(() =>
                 :tone="kpi.tone"
               />
             </div>
+            <QuotaBars :report="quotaReport" :error="quotaError" />
             <UsageCharts
               :report="report"
               :stack="state.stack"
