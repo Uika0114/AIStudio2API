@@ -17,6 +17,11 @@ import (
 // Deterministic nonce and invented token are fixtures, never browser material.
 func fixtureEncryptedToken(t *testing.T, format string, key []byte) []byte {
 	t.Helper()
+	return fixtureEncryptedTokenPlaintext(t, format, key, "1//0"+strings.Repeat("x", 99))
+}
+
+func fixtureEncryptedTokenPlaintext(t *testing.T, format string, key []byte, plaintext string) []byte {
+	t.Helper()
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +32,74 @@ func fixtureEncryptedToken(t *testing.T, format string, key []byte) []byte {
 	}
 	nonce := bytes.Repeat([]byte{7}, gcm.NonceSize())
 	out := append([]byte(format), nonce...)
-	return gcm.Seal(out, nonce, []byte("1//0"+strings.Repeat("x", 99)), nil)
+	return gcm.Seal(out, nonce, []byte(plaintext), nil)
+}
+
+func TestDecryptChromeTokenPlaintextValidation(t *testing.T) {
+	key := bytes.Repeat([]byte{42}, 32)
+	legacy := "1//0" + strings.Repeat("x", 99)
+	longer := "1//0" + strings.Repeat("x", 123)
+	cases := []struct {
+		name      string
+		plaintext string
+		wantErr   bool
+	}{
+		{name: "legacy_103", plaintext: legacy},
+		{name: "longer_127", plaintext: longer},
+		{name: "other_length_151", plaintext: "1//0" + strings.Repeat("x", 147)},
+		{name: "single_byte_payload", plaintext: "1//0x"},
+		{name: "printable_ascii", plaintext: "1//0!AZaz09-_/+=~"},
+		{name: "empty", plaintext: "", wantErr: true},
+		{name: "prefix_only", plaintext: "1//0", wantErr: true},
+		{name: "incomplete_prefix", plaintext: "1//", wantErr: true},
+		{name: "wrong_prefix", plaintext: "2//0" + legacy[4:], wantErr: true},
+		{name: "leading_space", plaintext: " " + legacy, wantErr: true},
+		{name: "space", plaintext: legacy[:10] + " " + legacy[11:], wantErr: true},
+		{name: "trailing_space", plaintext: legacy[:102] + " ", wantErr: true},
+		{name: "tab", plaintext: legacy[:10] + "\t" + legacy[11:], wantErr: true},
+		{name: "newline", plaintext: legacy[:10] + "\n" + legacy[11:], wantErr: true},
+		{name: "carriage_return", plaintext: legacy[:10] + "\r" + legacy[11:], wantErr: true},
+		{name: "nul", plaintext: legacy[:10] + "\x00" + legacy[11:], wantErr: true},
+		{name: "del", plaintext: legacy[:10] + "\x7f" + legacy[11:], wantErr: true},
+		{name: "non_ascii", plaintext: legacy[:10] + "\x80" + legacy[11:], wantErr: true},
+		{name: "must_not_strip_32_byte_prefix", plaintext: strings.Repeat("h", 32) + longer, wantErr: true},
+	}
+	for _, format := range []string{"v10", "v20"} {
+		t.Run(format, func(t *testing.T) {
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					encrypted := fixtureEncryptedTokenPlaintext(t, format, key, tc.plaintext)
+					got, err := decryptChromeToken(key, encrypted)
+					if tc.wantErr {
+						if err == nil || got != "" {
+							t.Fatal("invalid plaintext was accepted or returned")
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("synthetic token rejected: %v", err)
+					}
+					if got != tc.plaintext {
+						t.Fatal("plaintext was altered")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDecryptChromeTokenRejectsDamagedGCM(t *testing.T) {
+	key := bytes.Repeat([]byte{42}, 32)
+	for _, format := range []string{"v10", "v20"} {
+		t.Run(format, func(t *testing.T) {
+			encrypted := fixtureEncryptedTokenPlaintext(t, format, key, "1//0"+strings.Repeat("x", 123))
+			encrypted[len(encrypted)-1] ^= 1
+			got, err := decryptChromeToken(key, encrypted)
+			if err == nil || got != "" {
+				t.Fatal("damaged GCM token was accepted or returned")
+			}
+		})
+	}
 }
 
 func fixtureAccount(root, profile, gaia, email string) Account {

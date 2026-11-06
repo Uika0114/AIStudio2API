@@ -199,8 +199,13 @@ func decryptChromeToken(masterKey []byte, encrypted []byte) (string, error) {
 	}
 	defer clear(plaintext)
 	token := string(plaintext)
-	if len(token) != 103 || !strings.HasPrefix(token, "1//0") {
+	if len(token) <= len("1//0") || !strings.HasPrefix(token, "1//0") {
 		return "", fmt.Errorf("refresh token 解密结果格式异常")
+	}
+	for _, b := range plaintext {
+		if b < '!' || b > '~' {
+			return "", fmt.Errorf("refresh token 解密结果格式异常")
+		}
 	}
 	return token, nil
 }
