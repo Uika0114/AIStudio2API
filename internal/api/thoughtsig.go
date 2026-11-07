@@ -132,7 +132,7 @@ func routedThoughtSignatureKey(base, channel, callKey string) string {
 	return base + "\x00" + channel + "\x00" + callKey
 }
 
-// thoughtSignatureKey 以调用 ID、函数名和规范化参数标识一次工具调用。
+// thoughtSignatureKey 以调用 ID、函数名和规范化参数的完整摘要标识一次工具调用。
 func thoughtSignatureKey(call aistudio.FunctionCall) string {
 	arguments := []byte(call.Arguments)
 	decoder := json.NewDecoder(bytes.NewReader(arguments))
@@ -143,7 +143,8 @@ func thoughtSignatureKey(call aistudio.FunctionCall) string {
 			arguments = canonical
 		}
 	}
-	return call.ID + "\x00" + call.Name + "\x00" + string(arguments)
+	digest := sha256.Sum256(arguments)
+	return call.ID + "\x00" + call.Name + "\x00" + fmt.Sprintf("%x", digest)
 }
 
 // RememberEvent sees only public projected events. Internal transport calls and
