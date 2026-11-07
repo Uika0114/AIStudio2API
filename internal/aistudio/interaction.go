@@ -285,7 +285,7 @@ func (c *Client) generateInteraction(ctx context.Context, request GenerateReques
 				}
 				return send(event)
 			}
-			finishAtStopSequence(ctx, request, output, stopTokenCount, matchedStopSequence, stopSend)
+			finishAtStopSequence(ctx, request, &output, stopTokenCount, matchedStopSequence, stopSend)
 			err = ctx.Err()
 		} else if closeErr := response.Body.Close(); err == nil && ctx.Err() == nil {
 			err = closeErr

@@ -2,19 +2,23 @@ package aistudio
 
 import (
 	"encoding/json"
+	"strings"
 )
 
+// generatedOutputParts owns its text builders and must not be copied after use.
 type generatedOutputParts struct {
-	visible   []Part
-	reasoning []Part
+	visible       []Part
+	reasoning     []Part
+	visibleText   strings.Builder
+	reasoningText strings.Builder
 }
 
 func (output *generatedOutputParts) observe(event Event) {
 	switch event.Kind {
 	case EventText:
-		output.appendText(&output.visible, event.Text, false, event.ThoughtSignature)
+		output.appendText(&output.visible, &output.visibleText, event.Text, false, event.ThoughtSignature)
 	case EventReasoning:
-		output.appendText(&output.reasoning, event.Text, true, event.ThoughtSignature)
+		output.appendText(&output.reasoning, &output.reasoningText, event.Text, true, event.ThoughtSignature)
 	case EventToolCall:
 		if event.ToolCall != nil {
 			call := *event.ToolCall
@@ -36,18 +40,21 @@ func (output *generatedOutputParts) observe(event Event) {
 	}
 }
 
-func (output *generatedOutputParts) appendText(parts *[]Part, text string, thought bool, signature string) {
+func (output *generatedOutputParts) appendText(parts *[]Part, buffer *strings.Builder, text string, thought bool, signature string) {
 	if text == "" {
 		return
 	}
 	if len(*parts) > 0 {
 		last := &(*parts)[len(*parts)-1]
 		if last.Text != "" && last.Thought == thought && last.ThoughtSignature == signature {
-			last.Text += text
+			buffer.WriteString(text)
+			last.Text = buffer.String()
 			return
 		}
 	}
-	*parts = append(*parts, Part{Text: text, Thought: thought, ThoughtSignature: signature})
+	buffer.Reset()
+	buffer.WriteString(text)
+	*parts = append(*parts, Part{Text: buffer.String(), Thought: thought, ThoughtSignature: signature})
 }
 
 func (output *generatedOutputParts) appendMedia(event Event) {
@@ -76,7 +83,7 @@ func (output *generatedOutputParts) appendMedia(event Event) {
 	})
 }
 
-func localCompleteUsage(request GenerateRequest, output generatedOutputParts) *Usage {
+func localCompleteUsage(request GenerateRequest, output *generatedOutputParts) *Usage {
 	inputTokens := localContentsTokens(request.Contents)
 	if request.System != "" {
 		inputTokens += localTextTokens(request.System) + 1
@@ -91,7 +98,7 @@ func localCompleteUsage(request GenerateRequest, output generatedOutputParts) *U
 }
 
 // countedCompleteUsage 使用权威输入总数补全本地停止用量
-func countedCompleteUsage(request GenerateRequest, output generatedOutputParts, count TokenCount) *Usage {
+func countedCompleteUsage(request GenerateRequest, output *generatedOutputParts, count TokenCount) *Usage {
 	toolTokens := localToolTokens(request.Tools)
 	if toolTokens > count.InputTokens {
 		toolTokens = count.InputTokens

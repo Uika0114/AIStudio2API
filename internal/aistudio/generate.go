@@ -880,14 +880,14 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 			if rawState.usage != nil || transport != nil {
 				stopUsage := rawState.usage
 				if stopUsage == nil {
-					stopUsage = localCompleteUsage(request, rawState.output)
+					stopUsage = localCompleteUsage(request, &rawState.output)
 					stopUsage.Source = "estimated"
 				}
 				if sendErr := stopSend(Event{Kind: EventUsage, Usage: stopUsage}); sendErr == nil {
 					_ = stopSend(Event{Kind: EventFinish, FinishReason: "stop", StopSequence: matchedStopSequence})
 				}
 			} else {
-				finishAtStopSequence(ctx, request, output, stopTokenCount, matchedStopSequence, stopSend)
+				finishAtStopSequence(ctx, request, &output, stopTokenCount, matchedStopSequence, stopSend)
 			}
 			return
 		}
@@ -935,9 +935,9 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 		}
 		if usage == nil {
 			if transport != nil {
-				usage = localCompleteUsage(request, rawState.output)
+				usage = localCompleteUsage(request, &rawState.output)
 			} else {
-				usage = localCompleteUsage(request, output)
+				usage = localCompleteUsage(request, &output)
 			}
 			usage.Source = "estimated"
 		} else {
@@ -1011,7 +1011,7 @@ func stopSequenceEmitter(matcher *stopSequenceMatcher, forward func(Event) error
 }
 
 // finishAtStopSequence 以权威输入计数补发用量，再发送 stop_sequence 终态；计数失败时只发送终态
-func finishAtStopSequence(ctx context.Context, request GenerateRequest, output generatedOutputParts, counts <-chan tokenCountResult, sequence string, send func(Event) error) {
+func finishAtStopSequence(ctx context.Context, request GenerateRequest, output *generatedOutputParts, counts <-chan tokenCountResult, sequence string, send func(Event) error) {
 	select {
 	case result := <-counts:
 		if result.err == nil {
