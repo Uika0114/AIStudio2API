@@ -164,8 +164,11 @@ export const api = {
   config: () => requestJSON<ServiceConfig>('/api/config'),
   usage: (query: URLSearchParams, signal?: AbortSignal) =>
     requestJSON<UsageReport>(`/api/usage?${query.toString()}`, { signal: signal ?? null }),
-  quotaEstimate: (signal?: AbortSignal) =>
-    requestJSON<QuotaEstimateReport>('/api/usage/quota', { signal: signal ?? null }),
+  quotaEstimate: (signal?: AbortSignal, model: QuotaEstimateReport['model'] = 'gemini-4-argon') =>
+    requestJSON<QuotaEstimateReport>(
+      model === 'gemini-4-argon' ? '/api/usage/quota' : `/api/usage/quota?model=${model}`,
+      { signal: signal ?? null },
+    ),
   usageRecords: (query: URLSearchParams, signal?: AbortSignal) =>
     requestJSON<UsageRecordPage>(`/api/usage/records?${query.toString()}`, {
       signal: signal ?? null,

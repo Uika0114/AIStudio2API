@@ -79,6 +79,7 @@ func runCommand(args []string, logs *logOutput) error {
 	manager.ledger = ledger
 	manager.requests.quota.Store(ledger)
 	manager.logs = logs
+	startPriceList(ctx, ledger, filepath.Join("config", "model-prices.json"), manager.requests.log)
 	return errors.Join(runServer(ctx, cfg, options, manager), manager.Close(), ledger.Close())
 }
 
@@ -131,7 +132,7 @@ func runServer(ctx context.Context, cfg config.Config, options commandOptions, m
 	apiHandler := api.NewHandler(manager, api.Config{
 		APIKey: cfg.ProxyAPIKey, Admin: manager, Ledger: manager.ledger,
 		AdminAuthEnabled: cfg.AdminAuthEnabled, AdminUsername: cfg.AdminUsername, AdminPassword: cfg.AdminPassword,
-		Quota: manager,
+		Quota: manager, Pricing: manager.ledger,
 	})
 	server := &http.Server{
 		Handler:           rootHandler(apiHandler),

@@ -11,6 +11,10 @@ import (
 // observation. That fixed cutoff keeps restart/replay separate from live epochs.
 // Historical StartedAt is a preparation-time proxy, never an exact send timestamp.
 func importQuotaHistory(ctx context.Context, conn *sql.Conn, since, now time.Time) error {
+	return importQuotaHistoryForScope(ctx, conn, since, now, argonQuota)
+}
+
+func importQuotaHistoryForScope(ctx context.Context, conn *sql.Conn, since, now time.Time, scope quotaScope) error {
 	from := QuotaWindow(now)
 	if !since.After(from) {
 		return nil
@@ -23,7 +27,7 @@ func importQuotaHistory(ctx context.Context, conn *sql.Conn, since, now time.Tim
  FROM requests r,json_each(CASE WHEN json_valid(r.attempts) THEN r.attempts ELSE '[]' END) j
  WHERE r.time>=? AND r.time<? AND json_extract(j.value,'$.kind')='generation'
  AND json_extract(j.value,'$.sent')=1 AND json_extract(j.value,'$.channel')='playground'
- AND json_extract(j.value,'$.base_model') IN ('gemini-4-argon','models/gemini-4-argon')`, from.UnixMilli(), since.UnixMilli())
+ AND json_extract(j.value,'$.base_model') IN (?,?)`, from.UnixMilli(), since.UnixMilli(), scope.model, "models/"+scope.model)
 	if err != nil {
 		return err
 	}
@@ -75,18 +79,18 @@ func importQuotaHistory(ctx context.Context, conn *sql.Conn, since, now time.Tim
 	}
 	defer tx.Rollback()
 	for _, item := range items {
-		_, err = tx.ExecContext(ctx, `INSERT INTO quota17_argon_attempts
+		_, err = tx.ExecContext(ctx, `INSERT INTO `+scope.attempts+`
  (epoch,id,revision,account,window,sent_at,tokens,reported,ended,limited) VALUES(?,?,?,?,?,?,?,?,1,?)
  ON CONFLICT(epoch,id) DO UPDATE SET revision=excluded.revision,
- tokens=CASE WHEN excluded.reported=1 THEN excluded.tokens ELSE quota17_argon_attempts.tokens END,
- reported=MAX(quota17_argon_attempts.reported,excluded.reported),limited=MAX(quota17_argon_attempts.limited,excluded.limited)
- WHERE excluded.revision>quota17_argon_attempts.revision AND excluded.account=quota17_argon_attempts.account AND excluded.sent_at=quota17_argon_attempts.sent_at`,
+ tokens=CASE WHEN excluded.reported=1 THEN excluded.tokens ELSE `+scope.attempts+`.tokens END,
+ reported=MAX(`+scope.attempts+`.reported,excluded.reported),limited=MAX(`+scope.attempts+`.limited,excluded.limited)
+ WHERE excluded.revision>`+scope.attempts+`.revision AND excluded.account=`+scope.attempts+`.account AND excluded.sent_at=`+scope.attempts+`.sent_at`,
 			"history/"+item.root, item.id, item.revision, item.account, from.UnixMilli(), item.at.UnixMilli(), item.tokens, item.reported, item.limited)
 		if err != nil {
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO quota17_history(window,until,attempts,skipped) VALUES(?,?,?,?)
+	_, err = tx.ExecContext(ctx, `INSERT INTO `+scope.history+`(window,until,attempts,skipped) VALUES(?,?,?,?)
  ON CONFLICT(window) DO UPDATE SET until=excluded.until,attempts=excluded.attempts,skipped=excluded.skipped`, from.UnixMilli(), since.UnixMilli(), len(items), skipped)
 	if err != nil {
 		return err

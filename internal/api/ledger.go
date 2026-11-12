@@ -127,6 +127,8 @@ type UsageReport struct {
 	Previous       UsageStats              `json:"previous"`
 	Cost           float64                 `json:"cost"`
 	PreviousCost   float64                 `json:"previous_cost"`
+	PricingVersion string                  `json:"pricing_version,omitempty"`
+	PricingSHA256  string                  `json:"pricing_sha256,omitempty"`
 	UnpricedModels []string                `json:"unpriced_models"`
 	Recent         UsageRecent             `json:"recent"`
 	Buckets        []UsageBucket           `json:"buckets"`

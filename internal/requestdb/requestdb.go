@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
+	"github.com/Mag1cFall/AIStudio2API/internal/pricing"
 	_ "modernc.org/sqlite"
 )
 
@@ -96,23 +97,26 @@ type Logger func(level string, message string)
 
 // Store 串行批量写入请求账本与汇总，并提供聚合与明细查询
 type Store struct {
-	db          *sql.DB
-	writes      chan write
-	done        chan struct{}
-	log         Logger
-	capture     atomic.Bool
-	dropped     atomic.Int64
-	mu          sync.RWMutex
-	closed      bool
-	quotaMu     sync.Mutex
-	quotaDB     *sql.DB
-	quotaDSN    string
-	quotaConn   *sql.Conn
-	quotaSince  time.Time
-	quotaEpoch  string
-	quotaGap    atomic.Int64
-	quotaWrites chan quotaWrite
-	quotaDone   chan struct{}
+	db               *sql.DB
+	writes           chan write
+	done             chan struct{}
+	log              Logger
+	capture          atomic.Bool
+	dropped          atomic.Int64
+	prices           atomic.Pointer[pricing.Catalog]
+	mu               sync.RWMutex
+	closed           bool
+	quotaMu          sync.Mutex
+	quotaDB          *sql.DB
+	quotaDSN         string
+	quotaConn        *sql.Conn
+	quotaSince       time.Time
+	quotaEpoch       string
+	quotaGap         atomic.Int64
+	quotaCarbonSince time.Time
+	quotaCarbonGap   atomic.Int64
+	quotaWrites      chan quotaWrite
+	quotaDone        chan struct{}
 }
 
 // Open 打开或创建账本数据库并启动写入协程

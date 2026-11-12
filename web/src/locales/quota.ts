@@ -1,5 +1,5 @@
 export const quotaZhCN = {
-  'quota.scope': 'Playground · Argon',
+  'quota.scope': 'Playground',
   'quota.tokens': 'Token',
   'quota.requests': '请求数',
   'quota.remaining': '剩余',
@@ -14,7 +14,7 @@ export const quotaZhCN = {
 } as const
 
 export const quotaEn: Record<keyof typeof quotaZhCN, string> = {
-  'quota.scope': 'Playground · Argon',
+  'quota.scope': 'Playground',
   'quota.tokens': 'Token',
   'quota.requests': 'Requests',
   'quota.remaining': 'Remaining',

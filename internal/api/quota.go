@@ -10,6 +10,11 @@ type QuotaService interface {
 	Quota(context.Context) (QuotaReport, error)
 }
 
+// ModelQuotaService extends the legacy Argon-only API without changing its contract.
+type ModelQuotaService interface {
+	QuotaForModel(context.Context, string) (QuotaReport, error)
+}
+
 type QuotaBalance struct {
 	Limit     *int64 `json:"limit"`
 	Used      *int64 `json:"used"`
@@ -63,7 +68,23 @@ type QuotaHistory struct {
 }
 
 func (s *server) handleQuota(w http.ResponseWriter, r *http.Request) {
-	report, err := s.config.Quota.Quota(r.Context())
+	model := r.URL.Query().Get("model")
+	if len(r.URL.Query()["model"]) > 1 || (model != "" && model != "gemini-4-argon" && model != "gemini-4-carbon") {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"message": "不支持的额度模型"}})
+		return
+	}
+	var report QuotaReport
+	var err error
+	if model == "gemini-4-carbon" {
+		service, ok := s.config.Quota.(ModelQuotaService)
+		if !ok {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{"message": "额度估算暂不可用"}})
+			return
+		}
+		report, err = service.QuotaForModel(r.Context(), model)
+	} else {
+		report, err = s.config.Quota.Quota(r.Context())
+	}
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{"message": "额度估算暂不可用"}})
 		return

@@ -11,7 +11,7 @@ import RangePicker from './usage/RangePicker.vue'
 import RankingTable from './usage/RankingTable.vue'
 import RecordsTable from './usage/RecordsTable.vue'
 import UsageCharts from './usage/UsageCharts.vue'
-import QuotaBars from './usage/QuotaBars.vue'
+import QuotaPoolBars from './usage/QuotaPoolBars.vue'
 import { useUsageFormat } from './usage/format'
 import {
   dimensions,
@@ -32,6 +32,8 @@ const { compact, integer, usd, percent, duration, dateTime, clock, ago, dimensio
 const state = useUsageState()
 const quotaReport = shallowRef<QuotaEstimateReport | null>(null)
 const quotaError = ref('')
+const carbonQuotaReport = shallowRef<QuotaEstimateReport | null>(null)
+const carbonQuotaError = ref('')
 let quotaController: AbortController | undefined
 let quotaLoading = false
 let quotaFetchedAt = 0
@@ -41,16 +43,32 @@ async function loadQuota(): Promise<void> {
   const current = new AbortController()
   quotaController = current
   quotaLoading = true
+  const read = async (model: QuotaEstimateReport['model']): Promise<void> => {
+    try {
+      const value = await api.quotaEstimate(current.signal, model)
+      if (value.channel !== 'playground' || value.model !== model)
+        throw new Error(t('quota.unavailable'))
+      if (current.signal.aborted) return
+      if (model === 'gemini-4-argon') {
+        quotaReport.value = value
+        quotaError.value = ''
+      } else {
+        carbonQuotaReport.value = value
+        carbonQuotaError.value = ''
+      }
+    } catch (reason) {
+      if (current.signal.aborted) return
+      if (model === 'gemini-4-argon') {
+        quotaReport.value = null
+        quotaError.value = errorText(reason)
+      } else {
+        // Retain membership visibility, but do not display a stale balance on errors.
+        carbonQuotaError.value = errorText(reason)
+      }
+    }
+  }
   try {
-    const value = await api.quotaEstimate(current.signal)
-    if (value.channel !== 'playground' || value.model !== 'gemini-4-argon')
-      throw new Error(t('quota.unavailable'))
-    quotaReport.value = value
-    quotaError.value = ''
-  } catch (reason) {
-    if (current.signal.aborted) return
-    quotaReport.value = null
-    quotaError.value = errorText(reason)
+    await Promise.all([read('gemini-4-argon'), read('gemini-4-carbon')])
   } finally {
     if (quotaController === current) {
       quotaLoading = false
@@ -509,10 +527,12 @@ const statusOptions = computed(() =>
         </button>
       </div>
 
-      <QuotaBars
+      <QuotaPoolBars
         v-if="status === 'error'"
         :report="quotaReport"
         :error="quotaError"
+        :carbon-report="carbonQuotaReport"
+        :carbon-error="carbonQuotaError"
       />
       <template v-if="status === 'loading'">
         <div
@@ -543,10 +563,12 @@ const statusOptions = computed(() =>
 
       <template v-else-if="report !== null">
         <div class="space-y-4" :aria-busy="loading">
-          <QuotaBars
+          <QuotaPoolBars
             v-if="report.totals.requests === 0"
             :report="quotaReport"
             :error="quotaError"
+            :carbon-report="carbonQuotaReport"
+            :carbon-error="carbonQuotaError"
           />
           <div
             v-if="report.totals.requests === 0"
@@ -585,7 +607,12 @@ const statusOptions = computed(() =>
                 :tone="kpi.tone"
               />
             </div>
-            <QuotaBars :report="quotaReport" :error="quotaError" />
+            <QuotaPoolBars
+              :report="quotaReport"
+              :error="quotaError"
+              :carbon-report="carbonQuotaReport"
+              :carbon-error="carbonQuotaError"
+            />
             <UsageCharts
               :report="report"
               :stack="state.stack"

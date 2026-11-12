@@ -12,7 +12,14 @@ import { useI18n } from '@/i18n'
 import type { QuotaBalance, QuotaEstimateReport } from '@/types'
 import UiIcon from '../UiIcon.vue'
 
-const props = defineProps<{ report: QuotaEstimateReport | null; error: string }>()
+const props = withDefaults(
+  defineProps<{
+    report: QuotaEstimateReport | null
+    error: string
+    modelLabel?: 'Argon' | 'Carbon'
+  }>(),
+  { modelLabel: 'Argon' },
+)
 const { t, locale } = useI18n()
 const compact = computed(
   () => new Intl.NumberFormat(locale.value, { notation: 'compact', maximumFractionDigits: 1 }),
@@ -62,12 +69,17 @@ function percent(balance: QuotaBalance | undefined): string {
 </script>
 
 <template>
-  <section class="space-y-2.5" :aria-label="t('quota.scope')" data-quota-bars>
+  <section
+    class="space-y-2.5"
+    :aria-label="`${t('quota.scope')} · ${modelLabel}`"
+    :data-quota-model="modelLabel"
+    data-quota-bars
+  >
     <HoverCardRoot v-for="metric in metrics" :key="metric.key" :open-delay="300" :close-delay="150">
       <HoverCardTrigger as-child>
         <div
           :data-quota="metric.key"
-          :aria-label="metric.label"
+          :aria-label="`${modelLabel} ${metric.label}`"
           role="group"
           tabindex="0"
           class="cursor-help rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
@@ -75,7 +87,7 @@ function percent(balance: QuotaBalance | undefined): string {
           <ProgressRoot
             :model-value="ratio(metric.balance) ?? null"
             :max="100"
-            :aria-label="metric.label"
+            :aria-label="`${modelLabel} ${metric.label}`"
             :aria-valuetext="`${t('quota.remaining')} ${number(metric.balance?.remaining, metric.key === 'tokens')} / ${number(metric.balance?.limit, metric.key === 'tokens')}`"
             class="relative h-8 w-full overflow-hidden rounded-md bg-raised"
             :class="{ 'quota-unknown': ratio(metric.balance) === undefined }"
@@ -92,6 +104,7 @@ function percent(balance: QuotaBalance | undefined): string {
             >
               <span class="flex min-w-0 items-center gap-2 whitespace-nowrap">
                 <UiIcon :name="metric.icon" :size="14" class="shrink-0 opacity-70" />
+                <span class="shrink-0">{{ modelLabel }}</span>
                 <span class="shrink-0">{{ metric.label }}</span>
                 <span
                   ><span class="font-semibold">{{

@@ -18,6 +18,10 @@ func (requests *requestRegistry) observeQuotaAttempt(attempt aistudio.Generation
 }
 
 func (manager *runtimeManager) Quota(ctx context.Context) (api.QuotaReport, error) {
+	return manager.QuotaForModel(ctx, "gemini-4-argon")
+}
+
+func (manager *runtimeManager) QuotaForModel(ctx context.Context, model string) (api.QuotaReport, error) {
 	manager.mu.RLock()
 	accounts, err := manager.current.admin.Accounts(ctx)
 	ledger := manager.ledger
@@ -29,5 +33,5 @@ func (manager *runtimeManager) Quota(ctx context.Context) (api.QuotaReport, erro
 	for _, account := range accounts {
 		members = append(members, api.QuotaMember{ID: account.ID, Label: account.Label, Tier: account.BenefitTier, State: account.State, Enabled: account.Enabled})
 	}
-	return ledger.QuotaSnapshot(ctx, members, time.Now())
+	return ledger.QuotaSnapshotForModel(ctx, members, time.Now(), model)
 }

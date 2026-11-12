@@ -370,7 +370,7 @@ type cost struct {
 }
 
 // scanCost 从原始记录逐条按模型单价累加 [from, to) 内符合筛选的费用，starts 非空时同时累加到各分桶
-func (store *Store) scanCost(ctx context.Context, from, to int64, starts []int64, filters api.UsageFilters) (cost, error) {
+func (store *Store) scanCost(ctx context.Context, from, to int64, starts []int64, filters api.UsageFilters, prices *pricing.Snapshot) (cost, error) {
 	clause, filterArgs := filterSQL(filters)
 	rows, err := store.db.QueryContext(ctx, `SELECT time, model, input_tokens, cached_tokens, reasoning_tokens + reply_tokens
  FROM requests WHERE time >= ? AND time < ?`+clause, append([]any{from, to}, filterArgs...)...)
@@ -384,10 +384,10 @@ func (store *Store) scanCost(ctx context.Context, from, to int64, starts []int64
 		if err := rows.Scan(&at, &model, &input, &cached, &output); err != nil {
 			return cost{}, errors.Join(err, rows.Close())
 		}
-		if input+output > 0 && !pricing.Priced(model) {
+		if input+output > 0 && !prices.Priced(model) {
 			result.unpriced[model] = true
 		}
-		value := pricing.Cost(model, input, cached, output)
+		value := prices.Cost(model, input, cached, output)
 		result.total += value
 		if starts != nil {
 			result.buckets[bucketIndex(starts, at)] += value
@@ -401,6 +401,8 @@ var usageDimensions = append(slices.Clone(api.UsageDimensions), "status")
 
 // Usage 返回时间范围内的汇总、上一周期、估算费用、逐桶趋势、堆叠序列、分项与筛选候选
 func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageReport, error) {
+	// Capture once: current/previous periods and every bucket must use one immutable table.
+	prices := store.priceSnapshot()
 	location := query.Location
 	if location == nil {
 		location = time.UTC
@@ -460,11 +462,11 @@ func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageR
 	if err := store.scan(ctx, segment{from: now.Add(-recentWindow).UnixMilli(), to: now.UnixMilli() + 1}, query.Filters, recent.add); err != nil {
 		return api.UsageReport{}, err
 	}
-	current, err := store.scanCost(ctx, from, to, starts, query.Filters)
+	current, err := store.scanCost(ctx, from, to, starts, query.Filters, prices)
 	if err != nil {
 		return api.UsageReport{}, err
 	}
-	before, err := store.scanCost(ctx, from-(to-from), from, nil, query.Filters)
+	before, err := store.scanCost(ctx, from-(to-from), from, nil, query.Filters, prices)
 	if err != nil {
 		return api.UsageReport{}, err
 	}
@@ -472,6 +474,7 @@ func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageR
 	slices.Sort(unpriced)
 	report := api.UsageReport{
 		From: query.From.UTC(), To: query.To.UTC(), BucketSeconds: int64(query.Bucket / time.Second), GeneratedAt: now.UTC(),
+		PricingVersion: prices.Version(), PricingSHA256: prices.SHA256(),
 		Totals: totals.stats(), Previous: previous.stats(), Cost: current.total, PreviousCost: before.total, UnpricedModels: unpriced, StackBy: query.Stack,
 		Recent:  api.UsageRecent{Minutes: int(recentWindow / time.Minute), Requests: recent.requests, Tokens: recent.totalTokens},
 		Buckets: make([]api.UsageBucket, len(starts)), Groups: map[string][]api.UsageGroup{}, Pairs: []api.UsagePair{},
