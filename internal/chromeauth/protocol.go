@@ -20,6 +20,7 @@ import (
 	"io"
 	"math/big"
 	"strings"
+	"time"
 
 	http "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
@@ -29,13 +30,12 @@ import (
 // ErrCredentialsRejected 表示上游已拒绝保存的 Chrome 续签材料
 var ErrCredentialsRejected = errors.New("Chrome OAuth 续签材料失效")
 
-// multiloginStatusError 保留续签阶段和上游状态
-func multiloginStatusError(phase string, statusCode int, status string) error {
-	err := fmt.Errorf("OAuthMultilogin %s 阶段失败 HTTP %d status %s", phase, statusCode, status)
+// multiloginStatusError never exposes server-controlled status text.
+func multiloginStatusError(_ string, _ int, status string) error {
 	if status == "INVALID_TOKENS" {
-		return errors.Join(ErrCredentialsRejected, err)
+		return oauthError("MATERIAL_REJECTED")
 	}
-	return err
+	return oauthError("UPSTREAM_REJECTED")
 }
 
 const (
@@ -75,21 +75,35 @@ type deviceBindingKey interface {
 }
 
 func fetchGoogleCookies(ctx context.Context, gaiaID string, token string, wrappedKey []byte, proxyURL string) ([]multiloginCookie, error) {
-	bindingKey, err := openDeviceBindingKey(wrappedKey)
+	return fetchGoogleCookiesWith(ctx, gaiaID, token, wrappedKey, proxyURL, openDeviceBindingKey, newOAuthClient)
+}
+
+// Dependencies are supplied only in-process, allowing tests to use fake HTTP and
+// synthetic keys without opening a user's Chrome or device-key storage.
+func fetchGoogleCookiesWith(ctx context.Context, gaiaID, token string, wrappedKey []byte, proxyURL string, openKey func([]byte) (deviceBindingKey, error), makeClient func(string) (tls_client.HttpClient, error)) (_ []multiloginCookie, resultErr error) {
+	started := time.Now()
+	stage := "key_open"
+	defer func() {
+		observeHTTP(ctx, HTTPObservation{Phase: "workflow", Stage: stage, Category: oauthCategory(resultErr), Elapsed: time.Since(started), SendEvidence: "unknown"})
+	}()
+	bindingKey, err := openKey(wrappedKey)
 	if err != nil {
-		return nil, err
+		return nil, oauthError("DEVICE_KEY_FAILURE")
 	}
 	defer bindingKey.Close()
+	stage = "key_public"
 	publicKey, spki, err := bindingKey.PublicKey()
 	if err != nil {
-		return nil, err
+		return nil, oauthError("DEVICE_KEY_FAILURE")
 	}
-	client, err := newOAuthClient(proxyURL)
+	stage = "client_prepare"
+	client, err := makeClient(proxyURL)
 	if err != nil {
-		return nil, err
+		return nil, oauthError("CLIENT_CONFIGURATION_FAILURE")
 	}
 	defer client.CloseIdleConnections()
 
+	stage = "challenge"
 	firstStatus, first, err := requestMultilogin(ctx, client, gaiaID, token, assertionSentinel)
 	if err != nil {
 		return nil, err
@@ -99,14 +113,16 @@ func fetchGoogleCookies(ctx context.Context, gaiaID string, token string, wrappe
 		return nil, multiloginStatusError("challenge", firstStatus, first.Status)
 	}
 
+	stage = "assertion_prepare"
 	ephemeralPrivateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("生成 HPKE 临时密钥: %w", err)
+		return nil, oauthError("ASSERTION_PREPARATION_FAILURE")
 	}
 	assertion, err := createAssertion(bindingKey, publicKey, spki, challenge, ephemeralPrivateKey.PublicKey().Bytes())
 	if err != nil {
-		return nil, err
+		return nil, oauthError("DEVICE_KEY_FAILURE")
 	}
+	stage = "assertion"
 	secondStatus, second, err := requestMultilogin(ctx, client, gaiaID, token, assertion)
 	if err != nil {
 		return nil, err
@@ -114,33 +130,32 @@ func fetchGoogleCookies(ctx context.Context, gaiaID string, token string, wrappe
 	if secondStatus != http.StatusOK || second.Status != "OK" {
 		return nil, multiloginStatusError("assertion", secondStatus, second.Status)
 	}
-	if len(second.Directed) == 0 || bytes.Equal(second.Directed, []byte("null")) {
-		return nil, fmt.Errorf("OAuthMultilogin 响应缺少 token_binding_directed_response")
-	}
-	if len(second.Cookies) == 0 {
-		return nil, fmt.Errorf("OAuthMultilogin 响应缺少 Cookie")
+	stage = "cookie_decode"
+	if len(second.Directed) == 0 || bytes.Equal(second.Directed, []byte("null")) || len(second.Cookies) == 0 {
+		return nil, oauthError("RESPONSE_INVALID")
 	}
 
 	names := make(map[string]struct{}, len(second.Cookies))
 	for index := range second.Cookies {
 		cookie := &second.Cookies[index]
 		if cookie.Name == "" || cookie.Value == "" {
-			return nil, fmt.Errorf("OAuthMultilogin Cookie 格式异常")
+			return nil, oauthError("RESPONSE_INVALID")
 		}
 		cookie.Value, err = hpkeOpen(ephemeralPrivateKey, cookie.Value)
 		if err != nil {
-			return nil, err
+			return nil, oauthError("COOKIE_DECRYPTION_FAILURE")
 		}
 		if cookie.Domain == "" && (cookie.Host == "" || strings.HasPrefix(cookie.Host, ".")) {
-			return nil, fmt.Errorf("OAuthMultilogin Cookie 域格式异常")
+			return nil, oauthError("RESPONSE_INVALID")
 		}
 		names[cookie.Name] = struct{}{}
 	}
 	for _, required := range []string{"SAPISID", "__Secure-1PSID"} {
 		if _, ok := names[required]; !ok {
-			return nil, fmt.Errorf("OAuthMultilogin 缺少核心 Cookie: %s", required)
+			return nil, oauthError("RESPONSE_INVALID")
 		}
 	}
+	stage = "complete"
 	return second.Cookies, nil
 }
 
@@ -161,39 +176,57 @@ func newOAuthClient(proxyURL string) (tls_client.HttpClient, error) {
 	return client, nil
 }
 
-func requestMultilogin(ctx context.Context, client tls_client.HttpClient, gaiaID string, token string, assertion string) (int, multiloginResponse, error) {
+func requestMultilogin(ctx context.Context, client tls_client.HttpClient, gaiaID string, token string, assertion string) (status int, result multiloginResponse, resultErr error) {
+	started := time.Now()
+	event := HTTPObservation{Phase: "assertion", Stage: "request_prepare", SendEvidence: "not_attempted"}
+	if assertion == assertionSentinel {
+		event.Phase = "challenge"
+	}
+	defer func() {
+		event.Status, event.Category, event.Elapsed = status, oauthCategory(resultErr), time.Since(started)
+		observeHTTP(ctx, event)
+	}()
 	authorization := encodeMultiOAuthHeader(gaiaID, token, assertion)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, multiloginURL, strings.NewReader(" "))
 	if err != nil {
-		return 0, multiloginResponse{}, fmt.Errorf("创建 OAuthMultilogin 请求: %w", err)
+		return 0, result, oauthError("REQUEST_PREPARATION_FAILURE")
 	}
 	request.Header.Set("Authorization", "MultiOAuth "+authorization)
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("User-Agent", userAgent)
-	phase := "assertion"
-	if assertion == assertionSentinel {
-		phase = "challenge"
-	}
-	observeHTTP(ctx, phase, true, 0)
+	event.Stage, event.SendEvidence = "transport", "unknown"
+	// tls-client owns connection/proxy setup, and fhttp may retry internally.
+	// Do entry, a final dial error or missing trace callbacks cannot prove that
+	// every attempt was unstarted. All Do failures remain indeterminate.
 	response, err := client.Do(request)
-	if err != nil {
-		return 0, multiloginResponse{}, fmt.Errorf("OAuthMultilogin 请求失败: %w", err)
+	if response != nil {
+		status = response.StatusCode
+		event.ResponseReceived, event.SendEvidence = true, "response_received"
+		if response.Body != nil {
+			defer response.Body.Close()
+		}
 	}
-	observeHTTP(ctx, phase, false, response.StatusCode)
-	defer response.Body.Close()
+	if err != nil {
+		return status, result, oauthError(transportCategory(err))
+	}
+	if response == nil || response.Body == nil {
+		return status, result, oauthError("RESPONSE_INVALID")
+	}
+	event.Stage = "response_read"
 	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 	if err != nil {
-		return response.StatusCode, multiloginResponse{}, fmt.Errorf("读取 OAuthMultilogin 响应: %w", err)
+		return status, result, oauthError("RESPONSE_READ_FAILURE")
 	}
 	body = bytes.TrimSpace(body)
 	if bytes.HasPrefix(body, []byte(")]}'")) {
 		body = bytes.TrimSpace(body[4:])
 	}
-	var result multiloginResponse
+	event.Stage = "response_parse"
 	if err := json.Unmarshal(body, &result); err != nil {
-		return response.StatusCode, multiloginResponse{}, fmt.Errorf("OAuthMultilogin 返回无法解析的响应 HTTP %d", response.StatusCode)
+		return status, multiloginResponse{}, oauthError("RESPONSE_INVALID")
 	}
-	return response.StatusCode, result, nil
+	event.Stage = "response_complete"
+	return status, result, nil
 }
 
 func findChallenge(response multiloginResponse) string {

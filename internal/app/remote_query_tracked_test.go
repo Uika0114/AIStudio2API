@@ -50,7 +50,7 @@ func (b *queryTrackedBackend) Generate(ctx context.Context, r aistudio.GenerateR
 func TestRemoteQueryTrackedGenerateNeverFailsOverOrRestartsOutput(t *testing.T) {
 	for _, mode := range []string{"rpc", "worker-init", "delivered", "eof"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newQueryAppFixture(t, "not-started", "reauth", true)
+			f := newQueryAppFixture(t, "new", "reauth", false)
 			lease, _ := aistudio.AccountLeaseFromContext(f.ctx)
 			if e := lease.Release(); e != nil {
 				t.Fatal(e)
@@ -74,10 +74,25 @@ func TestRemoteQueryTrackedGenerateNeverFailsOverOrRestartsOutput(t *testing.T) 
 			tracked.dataContext = t.Context()
 			tracked.state.Store(serviceRunning)
 			tracked.proxies = aistudio.NewProxyPool(f.pool, nil)
+			acquired := false
 			tracked.leaseAcquire = func(c context.Context, s aistudio.AccountSelection) (*aistudio.AccountLease, error) {
+				if acquired {
+					t.Error("tracked request tried to reacquire after session failure")
+					return nil, aistudio.SessionError("INDETERMINATE")
+				}
 				s.AccountID = f.account.ID
 				l, _, e := f.pool.TryAcquireFor(c, s)
-				return l, e
+				if e != nil {
+					return nil, e
+				}
+				acquired = true
+				// The account fails after acquisition, never before a new lease.
+				f.seedPending(t, l, "not-started", "reauth")
+				if e = l.ReplaceCookies(fixtureRefreshCookies("independent-private-sentinel")); e != nil {
+					_ = l.Release()
+					return nil, e
+				}
+				return l, nil
 			}
 			request := aistudio.GenerateRequest{ID: "query-tracked-" + mode, Model: "playground/query-fixture-model", Contents: []aistudio.Content{{Role: aistudio.RoleUser, Parts: []aistudio.Part{{Text: "invented prompt"}}}}}
 			events, e := tracked.Generate(t.Context(), request)

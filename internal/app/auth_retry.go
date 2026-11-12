@@ -28,6 +28,10 @@ type authRuntimeRefresher struct {
 	requests       *requestRegistry
 	remote         remoteSessionProvider
 	closeRemote    func()
+	recoveryMu     sync.Mutex
+	recoveryTasks  map[string]struct{}
+	recoveryClock  func() time.Time
+	ackAccepted    sync.Map
 }
 
 // authRetryTransport 为普通 RPC 执行一次认证续签重试
@@ -189,7 +193,7 @@ func (refresher *authRuntimeRefresher) markAuthenticationRequired(ctx context.Co
 		statuses := refresher.pool.Status()
 		accounts := make([]api.AdminAccount, 0, len(statuses))
 		for _, status := range statuses {
-			accounts = append(accounts, adminAccountDTO(status))
+			accounts = append(accounts, adminAccountDTO(status, refresher.pool))
 		}
 		refresher.requests.publish(api.AdminEvent{Type: "accounts", Data: map[string]any{"accounts": accounts}})
 	}
@@ -452,6 +456,9 @@ func (refresher *authRuntimeRefresher) Refresh(ctx context.Context) error {
 
 // Available accepts saved OAuth or a complete bound source; it never discovers Chrome.
 func (refresher *authRuntimeRefresher) Available(ctx context.Context) bool {
+	if !aistudio.RemoteAuthenticationAllowed(ctx) {
+		return false
+	}
 	lease, ok := aistudio.AccountLeaseFromContext(ctx)
 	if !ok {
 		return false

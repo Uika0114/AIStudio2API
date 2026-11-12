@@ -230,6 +230,7 @@ type AccountSelection struct {
 	StrictChannel     bool // explicit public model policy, unlike legacy internal preferences
 	PreferredChannel  Channel
 	anyTier           bool
+	purpose           accountLeasePurpose
 }
 
 const preferredBootstrapModelID = "gemini-flash-latest"
@@ -291,6 +292,8 @@ type AccountLease struct {
 	checkedAt             time.Time
 	refreshRuntime        bool
 	channel               Channel
+	purpose               accountLeasePurpose
+	resourceID            string
 	operation             sync.Mutex
 	released              bool
 	once                  sync.Once
@@ -528,7 +531,7 @@ func (s *AccountStore) Delete(account *Account) error {
 		}
 		return nil
 	}
-	leaseLock, _, err := acquireAccountFileLease(account.StoragePath)
+	leaseLock, _, err := acquireAccountFileLeasePurpose(account.StoragePath, leaseManagement)
 	if errors.Is(err, errAccountLeaseBusy) {
 		return fmt.Errorf("%w: %s", ErrAccountLeased, account.ID)
 	}
@@ -805,6 +808,7 @@ func NewAccountPool(accounts []*Account, perAccountConcurrency int) *AccountPool
 		if account.runtime.ModelAccess == nil {
 			account.runtime.ModelAccess = make(map[string]ModelAccess)
 		}
+		p.publishRemoteQuarantineLocked(account)
 		p.byID[account.ID] = account
 		for resourceID := range account.runtime.Resources {
 			p.resources[resourceID] = account.ID
@@ -837,7 +841,7 @@ func (p *AccountPool) Add(account *Account) (resultErr error) {
 		lockedExternally := account.persistenceLocked
 		account.storageMu.Unlock()
 		if !lockedExternally {
-			leaseLock, _, err := acquireAccountFileLease(account.StoragePath)
+			leaseLock, _, err := acquireAccountFileLeasePurpose(account.StoragePath, leaseManagement)
 			if errors.Is(err, errAccountLeaseBusy) {
 				return fmt.Errorf("%w: %s", ErrAccountLeased, account.ID)
 			}
@@ -890,6 +894,7 @@ func (p *AccountPool) Add(account *Account) (resultErr error) {
 			return fmt.Errorf("资源 %s 已绑定账户 %s", resourceID, owner)
 		}
 	}
+	p.publishRemoteQuarantineLocked(account)
 	p.accounts = append(p.accounts, account)
 	p.byID[account.ID] = account
 	for resourceID := range account.runtime.Resources {
@@ -922,7 +927,7 @@ func (p *AccountPool) Remove(accountID string, deleteDirectory func(*Account) er
 	account.exclusive = true
 	p.notifyLocked()
 	p.mu.Unlock()
-	leaseLock, _, err := acquireAccountFileLease(account.StoragePath)
+	leaseLock, _, err := acquireAccountFileLeasePurpose(account.StoragePath, leaseManagement)
 	if err != nil {
 		p.mu.Lock()
 		account.exclusive = false
@@ -993,6 +998,10 @@ func (p *AccountPool) Acquire(ctx context.Context, model string) (*AccountLease,
 
 // AcquireAccount 为管理操作获取不受调度状态限制的指定账户租约
 func (p *AccountPool) AcquireAccount(ctx context.Context, accountID string) (*AccountLease, error) {
+	return p.acquireAccount(ctx, accountID, leaseManagement)
+}
+
+func (p *AccountPool) acquireAccount(ctx context.Context, accountID string, purpose accountLeasePurpose) (*AccountLease, error) {
 	if p == nil {
 		return nil, ErrAccountNotFound
 	}
@@ -1024,14 +1033,14 @@ func (p *AccountPool) AcquireAccount(ctx context.Context, accountID string) (*Ac
 		}
 		if !account.exclusive && account.authRefreshers == 0 && account.active == 0 {
 			checkedAt := time.Now().UTC()
-			leaseLock, leasePath, err := acquireAccountFileLease(account.StoragePath)
+			leaseLock, leasePath, err := acquireAccountFileLeasePurpose(account.StoragePath, purpose)
 			if err == nil {
 				account.exclusive = true
 				account.leaseLock = leaseLock
 				account.leasePath = leasePath
 				p.mu.Unlock()
 				lease := &AccountLease{
-					pool: p, account: account, exclusive: true, authGeneration: account.authGeneration,
+					pool: p, account: account, exclusive: true, purpose: purpose, authGeneration: account.authGeneration,
 					modelAccessGeneration: account.modelAccessGeneration, checkedAt: checkedAt,
 				}
 				if err := p.refreshAccountRuntime(ctx, account); err != nil {
@@ -1044,6 +1053,11 @@ func (p *AccountPool) AcquireAccount(ctx context.Context, accountID string) (*Ac
 				p.mu.Lock()
 				lease.modelAccessGeneration = account.modelAccessGeneration
 				p.mu.Unlock()
+				if account.StoragePath != "" {
+					if _, err := lease.ReloadStorageState(); err != nil {
+						return nil, errors.Join(err, lease.Release())
+					}
+				}
 				return lease, nil
 			}
 			if !errors.Is(err, errAccountLeaseBusy) {
@@ -1236,6 +1250,13 @@ func (p *AccountPool) refreshAndValidateLease(
 		return false, ErrNoEligibleAccount
 	}
 	lease.modelAccessGeneration = account.modelAccessGeneration
+	if selection.purpose == leaseResourceResult {
+		if !resourceResultCandidate(account) {
+			return false, nil
+		}
+	} else if !generationCandidate(account) {
+		return false, nil
+	}
 	if resourceID := strings.TrimSpace(selection.ResourceID); resourceID != "" {
 		if owner, exists := p.resources[resourceID]; !exists || owner != account.ID {
 			return false, ErrResourceNotFound
@@ -1308,6 +1329,9 @@ func (p *AccountPool) markStaleAccountUnavailable(account *Account) {
 }
 
 func (p *AccountPool) validateSelectionLocked(selection AccountSelection) error {
+	if selection.purpose == leaseResourceResult && strings.TrimSpace(selection.ResourceID) == "" {
+		return ErrResourceNotFound
+	}
 	modelID := strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")
 	if modelID == "" {
 		return nil
@@ -1363,7 +1387,7 @@ func (p *AccountPool) enabledAccountSupportsLocked(selection AccountSelection) b
 
 // AcquireResource 获取创建资源的固定账户
 func (p *AccountPool) AcquireResource(ctx context.Context, resourceID string) (*AccountLease, error) {
-	return p.AcquireFor(ctx, AccountSelection{ResourceID: resourceID})
+	return p.AcquireFor(ctx, resourceSelection(resourceID))
 }
 
 // Account 返回当前租约持有的账户
@@ -1447,6 +1471,13 @@ func (l *AccountLease) markAuthenticationStateAt(required bool, reason string, c
 		checkedAt.Before(l.account.authCheckedAt) {
 		return nil
 	}
+	meta, _ := l.account.StorageState.Session()
+	remoteResult := l.purpose == leaseResourceResult && meta != nil && meta.Remote != nil
+	if !required && (remoteResult || remoteQuarantineCode(l.account.StorageState) != "") {
+		l.pool.publishRemoteQuarantineLocked(l.account)
+		l.pool.notifyLocked()
+		return nil
+	}
 	l.account.authCheckedAt = checkedAt
 	if !l.account.Config.Enabled {
 		l.account.State = AccountDisabled
@@ -1495,6 +1526,8 @@ func (l *AccountLease) SaveStorageState(state StorageState) error {
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
+	l.pool.publishRemoteQuarantineLocked(l.account)
+	l.pool.notifyLocked()
 	l.account.authGeneration++
 	l.authGeneration = l.account.authGeneration
 	l.account.authCheckedAt = time.Time{}
@@ -1582,6 +1615,8 @@ func (l *AccountLease) refreshStorageState(ctx context.Context, update func(*Sto
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
+	l.pool.publishRemoteQuarantineLocked(l.account)
+	l.pool.notifyLocked()
 	l.account.authGeneration++
 	l.authGeneration = l.account.authGeneration
 	l.account.authCheckedAt = time.Time{}
@@ -1592,7 +1627,7 @@ func (l *AccountLease) refreshStorageState(ctx context.Context, update func(*Sto
 
 // BeginAuthRefresh 为当前账户取得认证刷新独占窗口
 func (l *AccountLease) BeginAuthRefresh() (func(), bool) {
-	if l == nil || l.account == nil || l.pool == nil {
+	if l == nil || l.account == nil || l.pool == nil || !l.RemoteAuthenticationAllowed() {
 		return nil, false
 	}
 	l.operation.Lock()
@@ -1602,11 +1637,7 @@ func (l *AccountLease) BeginAuthRefresh() (func(), bool) {
 		l.pool.mu.Unlock()
 		return nil, false
 	}
-	if l.exclusive {
-		l.pool.mu.Unlock()
-		return func() {}, true
-	}
-	if l.account.exclusive {
+	if l.account.exclusive && !l.exclusive {
 		l.pool.mu.Unlock()
 		return nil, false
 	}
@@ -1620,6 +1651,7 @@ func (l *AccountLease) BeginAuthRefresh() (func(), bool) {
 			if l.account.authRefreshers > 0 {
 				l.account.authRefreshers--
 			}
+			l.pool.publishRemoteQuarantineLocked(l.account)
 			l.pool.notifyLocked()
 			l.pool.mu.Unlock()
 		})
@@ -1651,6 +1683,7 @@ func (l *AccountLease) SaveConfig(value AccountConfig) error {
 		l.account.State = initialAccountState(value, l.account.StorageState)
 		l.account.stateMessage = ""
 	}
+	l.pool.publishRemoteQuarantineLocked(l.account)
 	l.pool.notifyLocked()
 	l.pool.mu.Unlock()
 	return nil
@@ -1674,6 +1707,8 @@ func (l *AccountLease) ReloadStorageState() (StorageState, error) {
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
+	l.pool.publishRemoteQuarantineLocked(l.account)
+	l.pool.notifyLocked()
 	l.pool.mu.Unlock()
 	return state, nil
 }
@@ -1703,6 +1738,8 @@ func (l *AccountLease) ReplaceCookies(cookies []StateCookie) error {
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
+	l.pool.publishRemoteQuarantineLocked(l.account)
+	l.pool.notifyLocked()
 	l.pool.mu.Unlock()
 	return nil
 }
@@ -1800,6 +1837,8 @@ func (l *AccountLease) MergeSetCookieHeaders(headers []string, requestURL string
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
+	l.pool.publishRemoteQuarantineLocked(l.account)
+	l.pool.notifyLocked()
 	l.pool.mu.Unlock()
 	return nil
 }
@@ -1826,6 +1865,7 @@ func (l *AccountLease) Release() error {
 			l.account.leaseLock = nil
 			l.account.leasePath = ""
 		}
+		l.pool.publishRemoteQuarantineLocked(l.account)
 		l.pool.notifyLocked()
 		l.pool.mu.Unlock()
 	})
@@ -2403,9 +2443,18 @@ func (p *AccountPool) Status() []AccountStatus {
 			continue
 		}
 		state := account.State
+		code := remoteQuarantineCode(account.StorageState)
+		if code != "" {
+			state = AccountAuthRequired
+			if code == "REMOTE_OWNED" || code == "INVALID_SESSION_STATE" {
+				state = AccountUnavailable
+			}
+		}
 		_, active := accountCooldown(account, "", now)
 		if !account.Config.Enabled {
 			state = AccountDisabled
+		} else if account.authRefreshers > 0 {
+			state = AccountBusy
 		} else if state == AccountReady && (account.exclusive || account.exclusiveWaiters > 0 || account.authRefreshers > 0 || account.active > 0) {
 			state = AccountBusy
 		} else if state == AccountReady && active {
@@ -2418,6 +2467,9 @@ func (p *AccountPool) Status() []AccountStatus {
 		sort.Strings(models)
 		tier := account.BenefitTier.String()
 		message := account.stateMessage
+		if code != "" {
+			message = code
+		}
 		if account.runtime.CatalogFingerprint == "" {
 			tier = "Unknown"
 			if message == "" {
@@ -2514,7 +2566,7 @@ func (p *AccountPool) classifyCandidatesLocked(
 	groups := AccountCandidateGroups{}
 	for _, index := range indices {
 		account := p.accounts[index]
-		if account == nil || !account.Config.Enabled || account.State != AccountReady {
+		if !generationCandidate(account) {
 			continue
 		}
 		if modelID != "" && !p.accountSupportsAnyChannelLocked(account, selection) {
@@ -2553,12 +2605,14 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 	var earliest time.Time
 	for _, candidate := range p.channelCandidatesLocked(indices, selection) {
 		account := p.accounts[candidate.index]
-		if account == nil || !account.Config.Enabled || account.State != AccountReady {
+		if selection.purpose == leaseResourceResult && !resourceResultCandidate(account) ||
+			selection.purpose != leaseResourceResult && !generationCandidate(account) {
 			continue
 		}
 		if selection.ModelID != "" && !p.channelSupportsLocked(account, candidate.channel, selection) {
 			continue
 		}
+		previousWaitable := waitable
 		waitable = true
 		if account.exclusive || account.exclusiveWaiters > 0 || account.authRefreshers > 0 || account.active >= p.perAccountConcurrency {
 			continue
@@ -2576,8 +2630,17 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 		}
 		refreshRuntime := false
 		if account.active == 0 {
-			leaseLock, leasePath, err := acquireAccountFileLease(account.StoragePath)
-			if IsSessionFailureCode(err, "REMOTE_OWNED") {
+			leaseLock, leasePath, err := acquireAccountFileLeasePurpose(account.StoragePath, selection.purpose)
+			if IsSessionFailure(err) {
+				account.State = AccountAuthRequired
+				var failure *SessionFailure
+				if errors.As(err, &failure) {
+					account.stateMessage = failure.Code
+					if failure.Code == "REMOTE_OWNED" || failure.Code == "INVALID_SESSION_STATE" {
+						account.State = AccountUnavailable
+					}
+				}
+				waitable = previousWaitable
 				continue
 			}
 			if errors.Is(err, errAccountLeaseBusy) {
@@ -2601,7 +2664,7 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 		return &AccountLease{
 			pool: p, account: account, authGeneration: account.authGeneration,
 			modelAccessGeneration: account.modelAccessGeneration, refreshRuntime: refreshRuntime, checkedAt: now.UTC(),
-			channel: candidate.channel,
+			channel: candidate.channel, purpose: selection.purpose, resourceID: selection.ResourceID,
 		}, time.Time{}, true, nil
 	}
 	return nil, earliest, waitable, nil
@@ -2819,6 +2882,7 @@ func (p *AccountPool) setAccountState(accountID string, state AccountState, reas
 	if state == AccountReady || state == AccountAuthRequired {
 		account.authCheckedAt = time.Now().UTC()
 	}
+	p.publishRemoteQuarantineLocked(account)
 	p.notifyLocked()
 	return nil
 }
@@ -2914,7 +2978,7 @@ func initialAccountState(accountConfig AccountConfig, state StorageState) Accoun
 		if meta.Authority != nil {
 			return AccountUnavailable
 		}
-		if meta.Remote.EnrollmentRequired {
+		if meta.Remote.EnrollmentRequired || meta.Remote.Pending != nil || meta.Remote.RecoveryRequired {
 			return AccountAuthRequired
 		}
 	}
@@ -3395,10 +3459,18 @@ func selectionAccessScope(selection AccountSelection) string {
 }
 
 func acquireAccountFileLease(storagePath string) (*flock.Flock, string, error) {
-	return acquireAccountFileLeaseFor(storagePath, false)
+	return acquireAccountFileLeasePurpose(storagePath, leaseGeneration)
 }
 
 func acquireAccountFileLeaseFor(storagePath string, authority bool) (*flock.Flock, string, error) {
+	return acquireAccountFileLeaseChecked(storagePath, authority, leaseGeneration)
+}
+
+func acquireAccountFileLeasePurpose(storagePath string, purpose accountLeasePurpose) (*flock.Flock, string, error) {
+	return acquireAccountFileLeaseChecked(storagePath, false, purpose)
+}
+
+func acquireAccountFileLeaseChecked(storagePath string, authority bool, purpose accountLeasePurpose) (*flock.Flock, string, error) {
 	if storagePath == "" {
 		return nil, "", nil
 	}
@@ -3417,7 +3489,7 @@ func acquireAccountFileLeaseFor(storagePath string, authority bool) (*flock.Floc
 		return nil, leasePath, errAccountLeaseBusy
 	}
 	if !authority {
-		checkErr := sessionAcquisitionFence(storagePath)
+		checkErr := sessionAcquisitionFenceFor(storagePath, purpose)
 		if checkErr != nil && !errors.Is(checkErr, os.ErrNotExist) {
 			_ = leaseLock.Unlock()
 			return nil, leasePath, checkErr
@@ -3430,7 +3502,7 @@ func acquireAccountPublishLease(account *Account, validate bool) (*AccountPublis
 	if account == nil || strings.TrimSpace(account.ID) == "" {
 		return nil, fmt.Errorf("账户未初始化")
 	}
-	requestLock, _, err := acquireAccountFileLease(account.StoragePath)
+	requestLock, _, err := acquireAccountFileLeasePurpose(account.StoragePath, leaseManagement)
 	if errors.Is(err, errAccountLeaseBusy) {
 		return nil, fmt.Errorf("%w: %s", ErrAccountLeased, account.ID)
 	}

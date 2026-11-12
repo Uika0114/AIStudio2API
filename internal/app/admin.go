@@ -160,7 +160,7 @@ func (admin *runtimeAdmin) Accounts(context.Context) ([]api.AdminAccount, error)
 	statuses := admin.pool.Status()
 	accounts := make([]api.AdminAccount, 0, len(statuses))
 	for _, status := range statuses {
-		accounts = append(accounts, adminAccountDTO(status))
+		accounts = append(accounts, adminAccountDTO(status, admin.pool))
 	}
 	return accounts, nil
 }
@@ -651,7 +651,7 @@ func (admin *runtimeAdmin) publishRuntimeSnapshot(ctx context.Context, status ap
 func (admin *runtimeAdmin) account(accountID string) (api.AdminAccount, error) {
 	for _, status := range admin.pool.Status() {
 		if status.ID == accountID {
-			return adminAccountDTO(status), nil
+			return adminAccountDTO(status, admin.pool), nil
 		}
 	}
 	return api.AdminAccount{}, accountOperationError(fmt.Errorf("%w: %s", aistudio.ErrAccountNotFound, accountID))
@@ -685,14 +685,47 @@ func (admin *runtimeAdmin) loginRequest(account *aistudio.Account, directory str
 	}
 }
 
-func adminAccountDTO(status aistudio.AccountStatus) api.AdminAccount {
+func adminAccountDTO(status aistudio.AccountStatus, pool *aistudio.AccountPool) api.AdminAccount {
 	models := make([]string, len(status.Models))
 	copy(models, status.Models)
-	return api.AdminAccount{
+	value := api.AdminAccount{
 		ID: status.ID, Label: status.Label, Enabled: status.Enabled, State: string(status.State),
 		Proxy: status.Proxy, Egress: status.Egress, Locale: status.Locale, Timezone: status.Timezone,
 		Models: models, BenefitTier: status.BenefitTier, Message: status.Message,
 	}
+	account, err := pool.Account(status.ID)
+	if err != nil {
+		return value
+	}
+	state, err := aistudio.LoadStorageState(account.StoragePath)
+	if err != nil {
+		return value
+	}
+	meta, err := state.Session()
+	if err != nil || meta == nil || meta.Remote == nil {
+		return value
+	}
+	if meta.Remote.Pending == nil && !meta.Remote.RecoveryRequired && !meta.Remote.EnrollmentRequired && meta.Remote.Ack == nil {
+		return value
+	}
+	control, _ := aistudio.ReadRemoteRecoveryStatus(account.StoragePath, meta.Remote, status.Enabled, time.Now())
+	value.RemoteRecovery = &api.AdminRemoteRecovery{
+		Action: control.Action, Code: control.Code, AckPending: meta.Remote.Ack != nil,
+		AuthUsed: control.AuthUsed, PendingUsed: control.PendingUsed, Queries: control.Queries,
+		Commits: control.Commits, AckUsed: control.AckUsed,
+	}
+	if !control.Due.IsZero() {
+		value.RemoteRecovery.Due = &control.Due
+	}
+	if !control.Deadline.IsZero() {
+		value.RemoteRecovery.Deadline = &control.Deadline
+	}
+	if meta.Remote.Ack != nil {
+		value.Message = strings.TrimSpace(value.Message + " ACK_PENDING " + control.Code)
+	} else if control.Code != "OK" && control.Code != "RECOVERY_BACKOFF" {
+		value.Message = strings.TrimSpace(value.Message + " " + control.Code)
+	}
+	return value
 }
 
 func invalidAccount(err error) error {

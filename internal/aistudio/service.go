@@ -358,7 +358,8 @@ func (s *PooledService) Models(ctx context.Context) ([]Model, error) {
 // RefreshAccountModels 刷新指定账户的权益与模型目录
 func (s *PooledService) RefreshAccountModels(ctx context.Context, accountID string) ([]Model, error) {
 	accountID = strings.TrimSpace(accountID)
-	lease, err := s.pool.AcquireAccount(ctx, accountID)
+	// Background catalog synchronization must obey ordinary generation fencing.
+	lease, err := s.pool.AcquireFor(ctx, AccountSelection{AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +391,7 @@ func (s *PooledService) RefreshAccountState(ctx context.Context, accountID strin
 	var lease *AccountLease
 	var err error
 	if wait {
-		lease, err = s.pool.AcquireAccount(ctx, accountID)
+		lease, err = s.pool.AcquireRemoteMaintenance(ctx, accountID)
 	} else {
 		lease, _, err = s.pool.TryAcquireFor(ctx, AccountSelection{AccountID: accountID})
 	}

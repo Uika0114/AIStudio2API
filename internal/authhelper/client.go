@@ -18,6 +18,14 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
+type recoveryControlKey struct{}
+
+// WithRecoveryControl enables the consumer's persistent recovery policy.
+// Explicit native reconciliation keeps its separate manual authorization.
+func WithRecoveryControl(ctx context.Context, now func() time.Time) context.Context {
+	return context.WithValue(ctx, recoveryControlKey{}, now)
+}
+
 type Client struct {
 	endpoint string
 	consumer string
@@ -131,6 +139,9 @@ func (c *Client) PrepareRecovery(ctx context.Context, state *aistudio.StorageSta
 		return failure("BOOTSTRAP_REQUIRED")
 	}
 	if r.Ack != nil {
+		if now, _ := ctx.Value(recoveryControlKey{}).(func() time.Time); now != nil {
+			return failure("ACK_REQUIRED")
+		}
 		if err := c.AckSession(ctx, r); err != nil {
 			return err
 		}
@@ -157,16 +168,17 @@ func (c *Client) PrepareRecovery(ctx context.Context, state *aistudio.StorageSta
 		if _, err := rand.Read(id[:]); err != nil {
 			return failure("STATE_UNAVAILABLE")
 		}
-		r.Pending = &aistudio.SessionOperation{ID: hex.EncodeToString(id[:]), Reason: reason, Epoch: r.Epoch, BaseCookie: r.CookieRevision, BaseMaterial: r.MaterialVersion, StateRevision: meta.Revision + 1, Deadline: deadline.Unix()}
+		pending := &aistudio.SessionOperation{ID: hex.EncodeToString(id[:]), Reason: reason, Epoch: r.Epoch, BaseCookie: r.CookieRevision, BaseMaterial: r.MaterialVersion, StateRevision: meta.Revision + 1, Deadline: deadline.Unix()}
 		if reason == "reauth" {
 			if takeBudget == nil {
 				return failure("RECOVERY_BUDGET_REQUIRED")
 			}
-			if err := takeBudget(r.Pending.ID); err != nil {
+			if err := takeBudget(pending.ID); err != nil {
 				return err
 			}
 		}
 		r.RecoveryRequired = true
+		r.Pending = pending
 		if state.SetSession(meta) != nil || aistudio.WriteManagedSessionState(ctx, path, state) != nil {
 			return failure("STATE_UNAVAILABLE")
 		}
@@ -179,8 +191,18 @@ func (c *Client) PrepareRecovery(ctx context.Context, state *aistudio.StorageSta
 	if err != nil {
 		var notStarted *notStartedError
 		if errors.As(err, &notStarted) {
+			retired := *meta.Remote.Pending
 			if e := retireNotStarted(ctx, state, path, meta, notStarted.receipt, false); e != nil {
 				return e
+			}
+			if now, _ := ctx.Value(recoveryControlKey{}).(func() time.Time); now != nil {
+				current, e := state.Session()
+				if e != nil || current == nil || current.Remote == nil {
+					return failure("INVALID_SESSION_STATE")
+				}
+				if e := aistudio.RetireRemoteRecoveryNotStarted(ctx, path, current.Remote, retired, now()); e != nil {
+					return e
+				}
 			}
 		}
 		return err

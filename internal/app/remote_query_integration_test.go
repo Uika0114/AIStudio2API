@@ -79,11 +79,17 @@ type queryAppFixture struct {
 	lookups   atomic.Int32
 	resets    int
 	headers   int
+	now       time.Time
 }
 
 func newQueryAppFixture(t *testing.T, outcome, reason string, advanced bool) *queryAppFixture {
 	t.Helper()
-	f := &queryAppFixture{}
+	return newQueryAppFixtureWithGeneration(t, outcome, reason, advanced, false)
+}
+
+func newQueryAppFixtureWithGeneration(t *testing.T, outcome, reason string, advanced, generation bool) *queryAppFixture {
+	t.Helper()
+	f := &queryAppFixture{now: time.Now()}
 	dir := t.TempDir()
 	f.mapping = authhelper.Mapping{Handle: "query_fixture_handle_0001", Consumer: "query-consumer.fixture.invalid", GaiaID: "query_fixture_gaia", Email: "query@example.invalid", StateFile: filepath.Join(dir, "authority", "storage-state.json"), DirectAuth: true}
 	m := f.mapping
@@ -151,40 +157,66 @@ func newQueryAppFixture(t *testing.T, outcome, reason string, advanced bool) *qu
 	if e = aistudio.WriteManagedSessionState(t.Context(), f.path, &s); e != nil {
 		t.Fatal(e)
 	}
-	if outcome != "new" {
-		meta, _ = s.Session()
-		meta.Remote.Pending = &aistudio.SessionOperation{ID: "query_app_operation_0001", Reason: reason, Epoch: 1, BaseMaterial: 1, StateRevision: meta.Revision + 1, Deadline: time.Now().Add(time.Minute).Unix()}
-		meta.Remote.RecoveryRequired = true
-		if s.SetSession(meta) != nil || aistudio.WriteManagedSessionState(t.Context(), f.path, &s) != nil {
-			t.Fatal("pending fixture")
-		}
-		f.request = authhelper.RefreshRequest{Version: 1, Handle: m.Handle, Epoch: 1, OperationID: meta.Remote.Pending.ID, BaseMaterial: 1, Reason: reason, Deadline: meta.Remote.Pending.Deadline}
-		if outcome == "ready" || outcome == "indeterminate" {
-			_, e = b.Refresh(t.Context(), m.Consumer, f.request)
-			if outcome == "ready" && e != nil || outcome == "indeterminate" && !aistudio.IsSessionFailureCode(e, "INDETERMINATE") {
-				t.Fatal(e)
-			}
-		}
-	}
 	model := aistudio.Model{ID: "query-fixture-model", Methods: []string{"generateContent"}, Capabilities: map[string]bool{"chat_model": true}, Channels: []string{"playground"}}
 	cfg := aistudio.DefaultAccountConfig(m.Email)
 	cfg.Enabled = true
 	f.account = &aistudio.Account{ID: m.Email, Directory: filepath.Dir(f.path), StoragePath: f.path, RuntimePath: filepath.Join(dir, "runtime.json"), StorageState: s, Config: cfg, State: aistudio.AccountReady, Models: []aistudio.Model{model}}
 	f.pool = aistudio.NewAccountPool([]*aistudio.Account{f.account}, 2)
 	f.pool.SetUpstreamChannels([]aistudio.Channel{aistudio.ChannelPlayground})
-	lease, e := f.pool.AcquireAccount(t.Context(), m.Email)
+	var lease *aistudio.AccountLease
+	if generation {
+		lease, e = f.pool.AcquireFor(t.Context(), aistudio.AccountSelection{AccountID: m.Email, ModelID: model.ID, Method: "generateContent", Channel: aistudio.ChannelPlayground, StrictChannel: true})
+	} else {
+		lease, e = f.pool.AcquireRemoteMaintenance(t.Context(), m.Email)
+	}
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { lease.Release() })
 	f.ctx = aistudio.WithRemoteAuthBudget(aistudio.ContextWithAccountLease(t.Context(), lease))
-	f.refresher = &authRuntimeRefresher{pool: f.pool, remote: f.client, requests: newRequestRegistry(t.Context()), reset: func(string) error { f.resets++; return nil }, prepareHeaders: func(string) (func(bool), error) { f.headers++; return func(bool) {}, nil }}
+	f.refresher = &authRuntimeRefresher{pool: f.pool, remote: f.client, requests: newRequestRegistry(t.Context()), reset: func(string) error { f.resets++; return nil }, prepareHeaders: func(string) (func(bool), error) { f.headers++; return func(bool) {}, nil }, recoveryClock: func() time.Time { return f.now }}
+	if outcome != "new" {
+		f.seedPending(t, lease, outcome, reason)
+	}
 	if advanced {
 		if e = lease.ReplaceCookies(fixtureRefreshCookies("independent-private-sentinel")); e != nil {
 			t.Fatal(e)
 		}
 	}
 	return f
+}
+
+// seedPending models a failure after the caller already owns its native lease.
+// It never grants new-generation access to an account which is already isolated.
+func (f *queryAppFixture) seedPending(t *testing.T, lease *aistudio.AccountLease, outcome, reason string) {
+	t.Helper()
+	const id = "query_app_operation_0001"
+	if err := lease.WithRemoteSession(t.Context(), func(meta *aistudio.SessionState) error {
+		return aistudio.ReserveRemoteRecoveryAuth(t.Context(), f.path, meta.Remote, id, false, f.now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.UpdateRemoteSession(t.Context(), func(meta *aistudio.SessionState) error {
+		r := meta.Remote
+		r.Pending = &aistudio.SessionOperation{ID: id, Reason: reason, Epoch: r.Epoch, BaseCookie: r.CookieRevision, BaseMaterial: r.MaterialVersion, StateRevision: meta.Revision + 1, Deadline: time.Now().Add(time.Minute).Unix()}
+		r.RecoveryRequired = true
+		f.request = authhelper.RefreshRequest{Version: 1, Handle: r.Handle, Epoch: r.Epoch, OperationID: id, BaseCookie: r.CookieRevision, BaseMaterial: r.MaterialVersion, Reason: reason, Deadline: r.Pending.Deadline}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.WithRemoteSession(t.Context(), func(meta *aistudio.SessionState) error {
+		return aistudio.RecordRemoteRecoveryFailure(t.Context(), f.path, meta.Remote, "INDETERMINATE", f.now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(30 * time.Second)
+	if outcome == "ready" || outcome == "indeterminate" {
+		_, err := f.broker.Refresh(t.Context(), f.mapping.Consumer, f.request)
+		if outcome == "ready" && err != nil || outcome == "indeterminate" && !aistudio.IsSessionFailureCode(err, "INDETERMINATE") {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestRemoteQueryActualAppHelperOutcomes(t *testing.T) {
@@ -291,7 +323,9 @@ func TestRemoteQueryRealOrdinaryCookieWriters(t *testing.T) {
 	for _, writer := range []string{"http-set-cookie", "worker-replace"} {
 		for _, outcome := range []string{"not-started", "indeterminate", "ready"} {
 			t.Run(writer+"/"+outcome, func(t *testing.T) {
-				f := newQueryAppFixture(t, outcome, "reauth", false)
+				// An ordinary worker cookie writer already owns a generation
+				// lease before the synthetic authentication failure is persisted.
+				f := newQueryAppFixtureWithGeneration(t, outcome, "reauth", false, true)
 				before, _ := aistudio.LoadStorageState(f.path)
 				bm, _ := before.Session()
 				if writer == "http-set-cookie" {

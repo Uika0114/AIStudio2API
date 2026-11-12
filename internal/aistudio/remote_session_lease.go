@@ -22,7 +22,7 @@ func CheckSessionRevision(path string, state StorageState) error {
 // UpdateRemoteSession only changes metadata, never cookies, origins, account config
 // or authGeneration. It is used for durable pending/ack reconciliation.
 func (l *AccountLease) UpdateRemoteSession(ctx context.Context, update func(*SessionState) error) error {
-	if l == nil || l.pool == nil || l.account == nil || update == nil {
+	if l == nil || l.pool == nil || l.account == nil || update == nil || l.purpose == leaseResourceResult {
 		return SessionError("STATE_UNAVAILABLE")
 	}
 	l.operation.Lock()
@@ -55,6 +55,32 @@ func (l *AccountLease) UpdateRemoteSession(ctx context.Context, update func(*Ses
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
+	l.pool.publishRemoteQuarantineLocked(l.account)
+	l.pool.notifyLocked()
 	l.pool.mu.Unlock()
 	return nil
+}
+
+// WithRemoteSession reads current metadata under the native lease/storage lock.
+// The callback may update a separate recovery control file, never this session.
+func (l *AccountLease) WithRemoteSession(ctx context.Context, use func(*SessionState) error) error {
+	if l == nil || l.pool == nil || l.account == nil || use == nil || l.purpose == leaseResourceResult {
+		return SessionError("STATE_UNAVAILABLE")
+	}
+	l.operation.Lock()
+	defer l.operation.Unlock()
+	if l.released || ctx.Err() != nil {
+		return SessionError("CANCELED")
+	}
+	l.account.storageMu.Lock()
+	defer l.account.storageMu.Unlock()
+	state, err := LoadStorageState(l.account.StoragePath)
+	if err != nil {
+		return SessionError("STATE_UNAVAILABLE")
+	}
+	meta, err := state.Session()
+	if err != nil || meta == nil || meta.Remote == nil {
+		return SessionError("INVALID_SESSION_STATE")
+	}
+	return use(meta)
 }

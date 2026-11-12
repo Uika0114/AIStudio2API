@@ -50,6 +50,9 @@ func nativeRenewWith(ctx context.Context, state aistudio.StorageState, m Mapping
 		return state, err
 	}
 	cookies, err := refresh(ctx, *ext.OAuth, proxy)
+	if errors.Is(err, chromeauth.ErrDeviceKeyUnavailable) {
+		return state, failure("UNSUPPORTED_KEY")
+	}
 	if errors.Is(err, chromeauth.ErrCredentialsRejected) {
 		if !allowSource {
 			return state, failure("MATERIAL_REJECTED")
@@ -75,6 +78,8 @@ func nativeRenewWith(ctx context.Context, state aistudio.StorageState, m Mapping
 		cookies, err = imported[0].State.Cookies, nil
 	}
 	if err != nil {
+		// Safe phase/category diagnostics have already been observed in-process.
+		// No Do error or zero HTTP count proves that all attempts were unstarted.
 		return state, failure("INDETERMINATE")
 	}
 	state.Cookies = cookies

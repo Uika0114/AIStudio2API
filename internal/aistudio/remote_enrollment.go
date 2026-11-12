@@ -16,6 +16,10 @@ type RetiredRemoteBinding struct {
 func ReadAccountDirectory(directory string) (*Account, error) { return loadAccount(directory) }
 
 func sessionAcquisitionFence(path string) error {
+	return sessionAcquisitionFenceFor(path, leaseGeneration)
+}
+
+func sessionAcquisitionFenceFor(path string, purpose accountLeasePurpose) error {
 	state, err := LoadStorageState(path)
 	if err != nil {
 		return err
@@ -30,8 +34,16 @@ func sessionAcquisitionFence(path string) error {
 	if meta.Authority != nil {
 		return SessionError("REMOTE_OWNED")
 	}
+	if purpose == leaseManagement || purpose == leaseRemoteMaintenance {
+		return nil
+	}
 	if meta.Remote.EnrollmentRequired {
 		return SessionError("BOOTSTRAP_REQUIRED")
+	}
+	if purpose == leaseGeneration {
+		if code := remoteQuarantineCode(state); code != "" {
+			return SessionError(code)
+		}
 	}
 	return nil
 }

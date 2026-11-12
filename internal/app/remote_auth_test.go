@@ -42,6 +42,17 @@ func fixtureRemoteRefresher(t *testing.T) (*authRuntimeRefresher, context.Contex
 	if err := aistudio.WriteManagedSessionState(ctx, path, &state); err != nil {
 		t.Fatal(err)
 	}
+	// Explicit authentication uses maintenance, not the passive management lease.
+	previous, _ := aistudio.AccountLeaseFromContext(ctx)
+	if err := previous.Release(); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := r.pool.AcquireRemoteMaintenance(t.Context(), meta.Remote.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lease.Release() })
+	ctx = aistudio.ContextWithAccountLease(t.Context(), lease)
 	count, sequence := new(int), 0
 	fixture := &remoteProviderFixture{}
 	fixture.prepare = func(c context.Context, s *aistudio.StorageState, p, reason string, take func(string) error) error {

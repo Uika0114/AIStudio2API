@@ -547,19 +547,19 @@ func (p *AccountPool) ListFiles(ctx context.Context) ([]FileMetadata, error) {
 
 // DownloadFile 使用资源创建账户下载 Drive 文件
 func (s *PooledService) DownloadFile(ctx context.Context, fileID string) (MediaStream, error) {
-	lease, owned, err := resolveAccountLease(ctx, s.pool, AccountSelection{ResourceID: strings.TrimSpace(fileID)})
+	lease, owned, err := resolveAccountLease(ctx, s.pool, resourceSelection(fileID))
 	if err != nil {
 		return MediaStream{}, err
 	}
 	accountID := lease.Account().ID
-	token, downloadErr := s.client.GenerateAccessToken(ContextWithAccountLease(ctx, lease), accountID)
+	token, downloadErr := s.client.GenerateAccessToken(ContextWithAccountLease(withoutRemoteAuthentication(ctx), lease), accountID)
 	var media MediaStream
 	if downloadErr == nil {
 		drive, ok := s.client.transport.(DriveTransport)
 		if !ok {
 			downloadErr = fmt.Errorf("AI Studio transport 不支持 Drive")
 		} else {
-			media, downloadErr = drive.DownloadDrive(ContextWithAccountLease(ctx, lease), accountID, token, fileID)
+			media, downloadErr = drive.DownloadDrive(ContextWithAccountLease(withoutRemoteAuthentication(ctx), lease), accountID, token, fileID)
 		}
 	}
 	if DefinitiveAuthenticationFailure(downloadErr) {
@@ -598,12 +598,12 @@ func (s *PooledService) DeleteFile(ctx context.Context, fileID string) error {
 
 // deleteDriveResource 使用资源创建账户删除已绑定的 Drive 文件并解除绑定，上游文件已不存在时解除绑定并返回文件引用不存在
 func (s *PooledService) deleteDriveResource(ctx context.Context, fileID string) error {
-	lease, owned, err := resolveAccountLease(ctx, s.pool, AccountSelection{ResourceID: fileID})
+	lease, owned, err := resolveAccountLease(ctx, s.pool, resourceSelection(fileID))
 	if err != nil {
 		return err
 	}
 	accountID := lease.Account().ID
-	attemptCtx := ContextWithAccountLease(ctx, lease)
+	attemptCtx := ContextWithAccountLease(withoutRemoteAuthentication(ctx), lease)
 	token, deleteErr := s.client.GenerateAccessToken(attemptCtx, accountID)
 	if deleteErr == nil {
 		deleteErr = s.client.deleteDriveFile(attemptCtx, accountID, token, fileID)
@@ -1132,7 +1132,12 @@ func driveUploadRPCError(method string, status int, body []byte) error {
 
 // DownloadDrive 通过当前账户固定出口下载 Drive 文件
 func (t *MakerSuiteHTTPTransport) DownloadDrive(ctx context.Context, accountID string, token string, fileID string) (MediaStream, error) {
-	lease, owned, err := resolveAccountLease(ctx, t.pool, AccountSelection{AccountID: accountID})
+	selection := AccountSelection{AccountID: accountID}
+	if current, ok := AccountLeaseFromContext(ctx); ok && current.purpose == leaseResourceResult {
+		selection = resourceSelection(fileID)
+		selection.AccountID = accountID
+	}
+	lease, owned, err := resolveAccountLease(ctx, t.pool, selection)
 	if err != nil {
 		return MediaStream{}, err
 	}
@@ -1182,7 +1187,12 @@ func (t *MakerSuiteHTTPTransport) DownloadDrive(ctx context.Context, accountID s
 
 // DeleteDrive 通过当前账户固定出口删除 Drive 文件
 func (t *MakerSuiteHTTPTransport) DeleteDrive(ctx context.Context, accountID string, token string, fileID string) error {
-	lease, owned, err := resolveAccountLease(ctx, t.pool, AccountSelection{AccountID: accountID})
+	selection := AccountSelection{AccountID: accountID}
+	if current, ok := AccountLeaseFromContext(ctx); ok && current.purpose == leaseResourceResult {
+		selection = resourceSelection(fileID)
+		selection.AccountID = accountID
+	}
+	lease, owned, err := resolveAccountLease(ctx, t.pool, selection)
 	if err != nil {
 		return err
 	}

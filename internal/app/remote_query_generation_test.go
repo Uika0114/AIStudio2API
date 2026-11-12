@@ -10,7 +10,7 @@ import (
 func TestRemoteQueryStaleLeaseCannotBypassUnfinishedRecovery(t *testing.T) {
 	for _, resolved := range []bool{false, true} {
 		t.Run(map[bool]string{false: "still-pending", true: "other-lease-committed"}[resolved], func(t *testing.T) {
-			f := newQueryAppFixture(t, "not-started", "reauth", false)
+			f := newQueryAppFixture(t, "new", "reauth", false)
 			old, _ := aistudio.AccountLeaseFromContext(f.ctx)
 			if e := old.Release(); e != nil {
 				t.Fatal(e)
@@ -25,6 +25,8 @@ func TestRemoteQueryStaleLeaseCannotBypassUnfinishedRecovery(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
+			// Both generation leases predate the failed authentication intent.
+			f.seedPending(t, other, "not-started", "reauth")
 			if resolved {
 				ctx := aistudio.WithRemoteAuthBudget(t.Context())
 				if e = other.RefreshManagedStorageState(ctx, func(s *aistudio.StorageState) error {

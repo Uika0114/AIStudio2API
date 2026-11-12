@@ -167,7 +167,17 @@ func NewProxyHTTPClient(proxyURL string) (*http.Client, error) {
 
 // Do 发送普通 MakerSuite RPC 并让响应 body 持有租约
 func (t *MakerSuiteHTTPTransport) Do(ctx context.Context, rpc RPCRequest) (*RPCResponse, error) {
-	lease, owned, err := resolveAccountLease(ctx, t.pool, AccountSelection{AccountID: rpc.AccountID})
+	selection := AccountSelection{AccountID: rpc.AccountID}
+	if current, ok := AccountLeaseFromContext(ctx); ok && current.purpose == leaseResourceResult {
+		switch rpc.Method {
+		case "GenerateAccessToken", "GetGenerateVideoOperation":
+			selection = resourceSelection(current.resourceID)
+			selection.AccountID = rpc.AccountID
+		default:
+			return nil, SessionError("RESOURCE_RESULT_ONLY")
+		}
+	}
+	lease, owned, err := resolveAccountLease(ctx, t.pool, selection)
 	if err != nil {
 		return nil, err
 	}
@@ -315,6 +325,9 @@ func resolveAccountLease(ctx context.Context, pool *AccountPool, selection Accou
 func validateLeaseSelection(lease *AccountLease, selection AccountSelection) error {
 	if lease == nil || lease.pool == nil || lease.account == nil {
 		return fmt.Errorf("context 账户租约未初始化")
+	}
+	if !leasePurposeAllowsSelection(lease, selection) {
+		return SessionError("LEASE_PURPOSE_MISMATCH")
 	}
 	lease.pool.mu.Lock()
 	defer lease.pool.mu.Unlock()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -287,8 +288,15 @@ func TestCookieProjectionReauthFailureKeepsCompleteMaterial(t *testing.T) {
 				}
 			}
 			req := fixtureRequest(m, "projection_failed_0001", 0)
+			want := "INDETERMINATE"
+			switch mode {
+			case "source", "gaia":
+				want = "IDENTITY_MISMATCH"
+			case "invalid-subset":
+				want = "COOKIE_POLICY_FAILURE"
+			}
 			for range 2 {
-				if _, err := b.Refresh(t.Context(), m.Consumer, req); safeCode(err) != "INDETERMINATE" {
+				if _, err := b.Refresh(t.Context(), m.Consumer, req); safeCode(err) != want {
 					t.Fatal("failure/unknown semantics changed", err)
 				}
 			}
@@ -298,7 +306,12 @@ func TestCookieProjectionReauthFailureKeepsCompleteMaterial(t *testing.T) {
 			}
 			assertProjectionFullState(t, original, got)
 			meta, _ := got.Session()
-			if count.Load() != 1 || meta.Authority.CookieRevision != 0 || meta.Authority.MaterialVersion != 1 || (meta.Authority.Operation.Stage != "pending" && meta.Authority.Operation.Stage != "indeterminate") {
+			op := meta.Authority.Operation
+			stageOK := op.Stage == "pending" || op.Stage == "indeterminate"
+			if want != "INDETERMINATE" {
+				stageOK = op.Stage == "failed" && op.Failure == want
+			}
+			if count.Load() != 1 || meta.Authority.CookieRevision != 0 || meta.Authority.MaterialVersion != 1 || !stageOK {
 				t.Fatal("failed operation changed material/version or was repeated")
 			}
 		})
@@ -519,6 +532,90 @@ func TestCookieProjectionClientAndKeepCurrentStillRejectUntrustedExtraDomain(t *
 			am, _ := authority.Session()
 			if pm.Remote.Pending == nil || pm.Remote.Ack != nil || am.Authority.Operation.Stage != "ready" || count.Load() != 1 {
 				t.Fatal("invalid result committed/acked/re-authenticated")
+			}
+		})
+	}
+}
+
+func TestCookieProjectionManualReconcileClosesRecoveryBudget(t *testing.T) {
+	for _, loseAck := range []bool{false, true} {
+		t.Run(fmt.Sprint("ack_lost=", loseAck), func(t *testing.T) {
+			b, m, count := fixtureBroker(t, func(_ context.Context, s aistudio.StorageState, _ Mapping, _ bool) (aistudio.StorageState, error) {
+				s.Cookies = projectionFullState(t, mForProjection(s), "renewed-fixture", 140).Cookies
+				return s, nil
+			})
+			installProjectionFullState(t, m)
+			c, _ := fixtureHTTP(t, b, m)
+			state, path := fixtureRemoteState(t, m)
+			if err := c.PrepareRecovery(t.Context(), &state, path, "bootstrap", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := commitNativeProjection(t.Context(), c, &state, path); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			original := c.http.Transport
+			lostRefresh, lostAck := false, false
+			c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				response, err := original.RoundTrip(r)
+				if err == nil && ((!lostRefresh && strings.HasSuffix(r.URL.Path, "/refresh")) ||
+					(loseAck && !lostAck && strings.HasSuffix(r.URL.Path, "/ack"))) {
+					if strings.HasSuffix(r.URL.Path, "/refresh") {
+						lostRefresh = true
+					} else {
+						lostAck = true
+					}
+					response.Body.Close()
+					return nil, errors.New("synthetic lost response")
+				}
+				return response, err
+			})
+			reserve := func(id string) error {
+				meta, _ := state.Session()
+				return aistudio.ReserveRemoteRecoveryAuth(t.Context(), path, meta.Remote, id, false, now)
+			}
+			if err := c.PrepareRecovery(t.Context(), &state, path, "reauth", reserve); safeCode(err) != "HELPER_UNAVAILABLE" {
+				t.Fatal("lost ready result", err)
+			}
+			state, _ = aistudio.LoadStorageState(path)
+			meta, _ := state.Session()
+			operationID := meta.Remote.Pending.ID
+			if err := aistudio.RecordRemoteRecoveryFailure(t.Context(), path, meta.Remote, "HELPER_UNAVAILABLE", now); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(16 * time.Minute)
+			status, err := aistudio.ReadRemoteRecoveryStatus(path, meta.Remote, true, now)
+			if err != nil || status.Code != "RECOVERY_BUDGET_EXPIRED" {
+				t.Fatal("fixture did not exhaust the automatic window", status, err)
+			}
+			// This is the explicit native reconcile path, not an automatic tick.
+			err = reconcileProjection(t.Context(), c, path)
+			if loseAck {
+				if safeCode(err) != "HELPER_UNAVAILABLE" {
+					t.Fatal("lost ACK", err)
+				}
+				state, _ = aistudio.LoadStorageState(path)
+				meta, _ = state.Session()
+				status, statusErr := aistudio.ReadRemoteRecoveryStatus(path, meta.Remote, true, now)
+				if statusErr != nil || status.AuthUsed != 0 || meta.Remote.Ack == nil || meta.Remote.Ack.ID != operationID || meta.Remote.Pending != nil || meta.Remote.RecoveryRequired || count.Load() != 1 {
+					t.Fatal("ACK loss undid manual projection or kept the auth round", status, statusErr)
+				}
+				err = reconcileProjection(t.Context(), c, path)
+			}
+			if err != nil {
+				t.Fatal("manual reconcile", err)
+			}
+			state, _ = aistudio.LoadStorageState(path)
+			meta, _ = state.Session()
+			if meta.Remote.Pending != nil || meta.Remote.Ack != nil || meta.Remote.RecoveryRequired || count.Load() != 1 {
+				t.Fatal("manual recovery did not finish the original operation")
+			}
+			// A later independent authentication may start a fresh bounded round.
+			if err := c.PrepareRecovery(t.Context(), &state, path, "reauth", reserve); err != nil {
+				t.Fatal("successful manual recovery stranded the next renewal", err)
+			}
+			if count.Load() != 2 {
+				t.Fatal("manual reconciliation authenticated or later renewal was skipped")
 			}
 		})
 	}

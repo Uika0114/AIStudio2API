@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/chromeauth"
 )
 
 type Mapping struct {
@@ -87,7 +88,7 @@ func authority(state aistudio.StorageState, m Mapping, epoch uint64) (*aistudio.
 	return meta, nil
 }
 
-func (b *Broker) Refresh(ctx context.Context, consumer string, r RefreshRequest) (*RefreshResponse, error) {
+func (b *Broker) Refresh(ctx context.Context, consumer string, r RefreshRequest) (_ *RefreshResponse, resultErr error) {
 	if !validRequest(r) {
 		return nil, failure("INVALID_REQUEST")
 	}
@@ -163,12 +164,23 @@ func (b *Broker) Refresh(ctx context.Context, consumer string, r RefreshRequest)
 	meta, _ = state.Session()
 	a = meta.Authority
 	originalExt, _, _ := state.AuthExtension()
+	work = withAuthenticationDiagnostics(work, r)
+	started := time.Now()
+	defer func() {
+		code := "OK"
+		if resultErr != nil {
+			code = safeCode(resultErr)
+		}
+		reportAuthentication(work, r, chromeauth.HTTPObservation{Phase: "operation", Stage: "complete", Category: code, Elapsed: time.Since(started), SendEvidence: "unknown"})
+	}()
 	work, httpCounts := countAuthentication(work)
 	result := state
 	if r.Reason == "reauth" {
 		result, err = cloneState(state)
 		if err == nil {
-			result, err = b.renew(work, result, m, a.AllowSourceRecovery)
+			// Ordinary RPC renewal uses saved material only. A legacy policy flag
+			// cannot turn unattended recovery into a Chrome-source rebind.
+			result, err = b.renew(work, result, m, false)
 		}
 	}
 	a.Operation.HTTP = httpCounts.snapshot()
@@ -201,7 +213,7 @@ func (b *Broker) Refresh(ctx context.Context, consumer string, r RefreshRequest)
 		code := safeCode(err)
 		a.Operation.Stage, a.Operation.Failure = "indeterminate", "INDETERMINATE"
 		switch code {
-		case "MATERIAL_REJECTED", "SOURCE_REBIND_REQUIRED", "UNSUPPORTED_KEY":
+		case "MATERIAL_REJECTED", "SOURCE_REBIND_REQUIRED", "UNSUPPORTED_KEY", "IDENTITY_MISMATCH", "VERSION_CONFLICT", "OPERATION_CONFLICT", "COOKIE_POLICY_FAILURE":
 			a.Operation.Stage, a.Operation.Failure = "failed", code
 		}
 		// Do not retain partial cookies/material from a failed backend.

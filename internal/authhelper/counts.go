@@ -9,20 +9,25 @@ import (
 )
 
 type authCounts struct {
-	sent      atomic.Int64
 	responses atomic.Int64
 }
 
 func countAuthentication(ctx context.Context) (context.Context, *authCounts) {
 	counts := new(authCounts)
-	return chromeauth.WithHTTPObserver(ctx, func(event chromeauth.HTTPObservation) {
-		if event.Sent {
-			counts.sent.Add(1)
-		} else {
-			counts.responses.Add(1)
-		}
-	}), counts
+	return chromeauth.WithHTTPObserver(ctx, counts.observe), counts
 }
+
+func (c *authCounts) observe(event chromeauth.HTTPObservation) {
+	if (event.Phase == "challenge" || event.Phase == "assertion") && event.ResponseReceived {
+		c.responses.Add(1)
+	}
+}
+
 func (c *authCounts) snapshot() *aistudio.AuthHTTPCounts {
-	return &aistudio.AuthHTTPCounts{Sent: int(c.sent.Load()), Responses: int(c.responses.Load())}
+	// Keep the existing strict JSON shape. New counts are a response-confirmed
+	// lower bound, not Do invocations or a complete count of transport attempts.
+	// In particular zero does NOT prove NOT_STARTED; historical counts did not
+	// prove sending either and are never upgraded into such evidence.
+	responses := int(c.responses.Load())
+	return &aistudio.AuthHTTPCounts{Sent: responses, Responses: responses}
 }

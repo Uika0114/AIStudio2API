@@ -140,17 +140,32 @@ type AdminAccountCounts struct {
 
 // AdminAccount 表示管理端账户摘要
 type AdminAccount struct {
-	ID          string   `json:"id"`
-	Label       string   `json:"label"`
-	Enabled     bool     `json:"enabled"`
-	State       string   `json:"state"`
-	Proxy       string   `json:"proxy"`
-	Egress      string   `json:"egress"`
-	Locale      string   `json:"locale"`
-	Timezone    string   `json:"timezone"`
-	Models      []string `json:"models"`
-	BenefitTier string   `json:"benefit_tier"`
-	Message     string   `json:"message"`
+	ID             string               `json:"id"`
+	Label          string               `json:"label"`
+	Enabled        bool                 `json:"enabled"`
+	State          string               `json:"state"`
+	Proxy          string               `json:"proxy"`
+	Egress         string               `json:"egress"`
+	Locale         string               `json:"locale"`
+	Timezone       string               `json:"timezone"`
+	Models         []string             `json:"models"`
+	BenefitTier    string               `json:"benefit_tier"`
+	Message        string               `json:"message"`
+	RemoteRecovery *AdminRemoteRecovery `json:"remote_recovery,omitempty"`
+}
+
+// AdminRemoteRecovery exposes scheduling diagnostics, never binding or credentials.
+type AdminRemoteRecovery struct {
+	Action      string     `json:"action"`
+	Code        string     `json:"code"`
+	AckPending  bool       `json:"ack_pending"`
+	Due         *time.Time `json:"due,omitempty"`
+	Deadline    *time.Time `json:"deadline,omitempty"`
+	AuthUsed    int        `json:"auth_used"`
+	PendingUsed int        `json:"pending_used"`
+	Queries     int        `json:"queries"`
+	Commits     int        `json:"commits"`
+	AckUsed     int        `json:"ack_used"`
 }
 
 // AdminProxy 表示代理池中一个代理的可用性与绑定账户数

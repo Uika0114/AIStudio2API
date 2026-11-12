@@ -342,7 +342,7 @@ func (s *PooledService) GenerateVideo(ctx context.Context, request VideoRequest)
 
 // GetGenerateVideoOperation 使用 operation 创建账户轮询并绑定结果文件
 func (s *PooledService) GetGenerateVideoOperation(ctx context.Context, operationID string) (VideoOperation, error) {
-	lease, owned, err := resolveAccountLease(ctx, s.pool, AccountSelection{ResourceID: strings.TrimSpace(operationID)})
+	lease, owned, err := resolveAccountLease(ctx, s.pool, resourceSelection(operationID))
 	if err != nil {
 		return VideoOperation{}, err
 	}
@@ -354,7 +354,7 @@ func (s *PooledService) GetGenerateVideoOperation(ctx context.Context, operation
 		}
 		return VideoOperation{}, bindingErr
 	}
-	operation, pollErr := s.client.GetGenerateVideoOperation(ContextWithAccountLease(ctx, lease), accountID, operationID)
+	operation, pollErr := s.client.GetGenerateVideoOperation(ContextWithAccountLease(withoutRemoteAuthentication(ctx), lease), accountID, operationID)
 	var rpcError *RPCError
 	if errors.As(pollErr, &rpcError) && rpcError.StatusCode == http.StatusNotFound {
 		operation, pollErr = VideoOperation{ID: operationID, Done: true, Missing: rpcError.Message}, nil

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -56,8 +57,16 @@ func RunCLI(args []string, out, errOut io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var diagnosticMu sync.Mutex
 	ctx = WithRecoveryObserver(ctx, func(v RecoveryProgress) {
+		diagnosticMu.Lock()
+		defer diagnosticMu.Unlock()
 		writeCLI(errOut, map[string]any{"event": "remote_auth", "phase": v.Phase, "code": v.Code, "operation_id": v.OperationID, "revision": v.Revision, "pending_revision": v.PendingRevision, "epoch": v.Epoch, "cookie_revision": v.CookieRevision, "material_version": v.MaterialVersion, "lookup_only": v.LookupOnly})
+	})
+	ctx = WithAuthenticationObserver(ctx, func(v AuthenticationProgress) {
+		diagnosticMu.Lock()
+		defer diagnosticMu.Unlock()
+		writeCLI(errOut, map[string]any{"event": "authentication_http", "operation_id": v.OperationID, "epoch": v.Epoch, "base_cookie_revision": v.BaseCookie, "base_material_version": v.BaseMaterial, "phase": v.HTTP.Phase, "stage": v.HTTP.Stage, "category": v.HTTP.Category, "status": v.HTTP.Status, "elapsed_ms": v.HTTP.Elapsed.Milliseconds(), "response_received": v.HTTP.ResponseReceived, "send_evidence": v.HTTP.SendEvidence})
 	})
 	var err error
 	switch *action {
@@ -327,6 +336,13 @@ func ackNativeProjection(ctx context.Context, client *Client, state *aistudio.St
 	if meta.Remote.Ack == nil {
 		return nil
 	}
+	// Preserve the exact committed operation until its explicit native budget
+	// completion is durable. This does not clear any consumer pool fence.
+	if err = aistudio.CompleteNativeRemoteRecoveryAuth(ctx, path, *state); err != nil {
+		reportRecovery(ctx, "control_blocked", safeCode(err), meta, true)
+		return err
+	}
+	operationID := meta.Remote.Ack.ID
 	if err = client.AckSession(ctx, meta.Remote); err != nil {
 		return err
 	}
@@ -336,5 +352,10 @@ func ackNativeProjection(ctx context.Context, client *Client, state *aistudio.St
 		return failure("STATE_UNAVAILABLE")
 	}
 	reportRecovery(ctx, "ack_persist", "OK", meta, true)
+	if err := aistudio.CompleteRemoteRecoveryAck(ctx, path, meta.Remote, operationID); err != nil &&
+		!aistudio.IsSessionFailureCode(err, "RECOVERY_BUDGET_REQUIRED") && !aistudio.IsSessionFailureCode(err, "RECOVERY_BINDING_MISMATCH") {
+		reportRecovery(ctx, "control_blocked", safeCode(err), meta, true)
+		return err
+	}
 	return nil
 }

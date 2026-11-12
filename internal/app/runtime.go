@@ -153,8 +153,10 @@ func newRuntime(
 		"协议运行时就绪 | 账户=%d | 耗时=%s",
 		len(accounts), time.Since(startedAt).Round(time.Millisecond),
 	))
+	stopRemoteMaintenance := refresher.startRemoteMaintenance(lifecycle, accounts)
 	closeRuntime := func() error {
 		stopProbe()
+		stopRemoteMaintenance()
 		if refresher.closeRemote != nil {
 			refresher.closeRemote()
 		}
@@ -2396,7 +2398,7 @@ func (service *trackedService) publishModelAccess() {
 	statuses := service.pool.Status()
 	accounts := make([]api.AdminAccount, 0, len(statuses))
 	for _, status := range statuses {
-		accounts = append(accounts, adminAccountDTO(status))
+		accounts = append(accounts, adminAccountDTO(status, service.pool))
 	}
 	service.requests.publish(api.AdminEvent{Type: "accounts", Data: map[string]any{"accounts": accounts}})
 	service.requests.publish(api.AdminEvent{Type: "models", Data: map[string]any{"models": service.catalogModels()}})

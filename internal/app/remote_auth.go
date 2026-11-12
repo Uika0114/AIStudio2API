@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/authhelper"
@@ -44,7 +45,7 @@ func (r *authRuntimeRefresher) tryRemoteRefresh(ctx context.Context) (bool, erro
 	state, err := lease.ReloadStorageState()
 	if err != nil {
 		return false, nil
-	} // Existing local path retains its original error handling.
+	}
 	meta, err := state.Session()
 	if err != nil {
 		return true, aistudio.SessionError("INVALID_SESSION_STATE")
@@ -52,13 +53,16 @@ func (r *authRuntimeRefresher) tryRemoteRefresh(ctx context.Context) (bool, erro
 	if meta == nil || meta.Remote == nil {
 		return false, nil
 	}
+	if !aistudio.RemoteAuthenticationAllowed(ctx) {
+		return true, aistudio.SessionError("RECOVERY_NOT_ALLOWED")
+	}
 	if r.remote == nil {
 		return true, aistudio.SessionError("REMOTE_DISABLED")
 	}
 	if ctx.Err() != nil {
 		return true, aistudio.SessionError("CANCELED")
 	}
-	ctx = aistudio.WithRemoteAuthBudget(ctx)
+	ctx = authhelper.WithRecoveryControl(aistudio.WithRemoteAuthBudget(ctx), r.recoveryNow)
 	end, ok := lease.BeginAuthRefresh()
 	if !ok {
 		return true, aistudio.SessionError("BUSY")
@@ -68,61 +72,81 @@ func (r *authRuntimeRefresher) tryRemoteRefresh(ctx context.Context) (bool, erro
 		return true, aistudio.SessionError("CANCELED")
 	}
 	account := lease.Account()
-	ctx = authhelper.WithRecoveryObserver(ctx, func(v authhelper.RecoveryProgress) {
-		if r.requests != nil {
-			revision, lookup := "unknown", "not_applicable"
-			if v.Revision != nil {
-				revision = fmt.Sprint(*v.Revision)
-			}
-			if v.LookupOnly != nil {
-				lookup = fmt.Sprint(*v.LookupOnly)
-			}
-			message := fmt.Sprintf("remote_auth phase=%s code=%s operation=%s revision=%s pending_revision=%d epoch=%d cookie_revision=%d material_version=%d lookup_only=%s", v.Phase, v.Code, v.OperationID, revision, v.PendingRevision, v.Epoch, v.CookieRevision, v.MaterialVersion, lookup)
-			if id, _ := ctx.Value(remoteRecoveryRequestKey{}).(string); id != "" {
-				r.requests.logRequestProgress(id, account.Config.Label, "INFO", message)
-			} else {
-				r.requests.log(account.Config.Label, "INFO", message)
-			}
+	defer func() {
+		// Publish before the triggering generation lease is released. Cancellation
+		// does not erase an intent which was already durably recorded.
+		_ = lease.RefreshRemoteQuarantine()
+		r.registerRemoteRecovery(account.ID)
+		r.publishRecoveryAccounts()
+	}()
+	ctx = r.observeRemoteRecovery(ctx, account)
+	if meta.Remote.Ack != nil {
+		if err := r.retryRemoteAck(ctx, lease, false); err != nil {
+			return true, err
 		}
-	})
+	}
+	background, _ := ctx.Value(remoteMaintenanceKey{}).(bool)
+	pendingID, submitted, prepared := "", false, false
 	err = lease.RefreshManagedStorageState(ctx, func(s *aistudio.StorageState) error {
 		metadata, e := s.Session()
 		if e != nil || metadata == nil || metadata.Remote == nil || metadata.Remote.Email != account.ID || metadata.Remote.Consumer != r.remote.Consumer() {
 			return aistudio.SessionError("IDENTITY_MISMATCH")
 		}
-		if e = r.remote.PrepareRecovery(ctx, s, account.StoragePath, "reauth", func(id string) error { return aistudio.TakeRemoteAuthBudget(ctx, id) }); e != nil {
+		if metadata.Remote.Pending != nil {
+			if e = aistudio.ReserveRemoteRecoveryPending(ctx, account.StoragePath, metadata.Remote, r.recoveryNow()); e != nil {
+				return e
+			}
+			pendingID = metadata.Remote.Pending.ID
+		}
+		if e = r.remote.PrepareRecovery(ctx, s, account.StoragePath, "reauth", func(id string) error {
+			if e := aistudio.TakeRemoteAuthBudget(ctx, id); e != nil {
+				return e
+			}
+			return aistudio.ReserveRemoteRecoveryAuth(ctx, account.StoragePath, metadata.Remote, id, background, r.recoveryNow())
+		}); e != nil {
 			return e
 		}
 		if _, e = aistudio.NewSigner().Sign(*s); e != nil {
 			return aistudio.SessionError("COOKIE_POLICY_FAILURE")
 		}
+		prepared = true
 		return nil
 	}, func() (func(bool), error) {
 		if ctx.Err() != nil {
 			return nil, aistudio.SessionError("CANCELED")
 		}
-		if r.reset == nil || r.prepareHeaders == nil {
+		if r.reset == nil || r.prepareHeaders == nil || r.reset(account.ID) != nil {
 			return nil, aistudio.SessionError("STATE_UNAVAILABLE")
 		}
-		if r.reset(account.ID) != nil {
-			return nil, aistudio.SessionError("STATE_UNAVAILABLE")
-		}
-		return r.prepareHeaders(account.ID)
+		finish, e := r.prepareHeaders(account.ID)
+		submitted = e == nil
+		return finish, e
 	})
+	// This context is used for metadata only, never a new RPC after cancellation.
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if pendingID != "" {
+		finishErr := lease.WithRemoteSession(cleanup, func(m *aistudio.SessionState) error {
+			return aistudio.FinishRemoteRecoveryPending(cleanup, account.StoragePath, m.Remote, pendingID, submitted, remoteRecoveryCode(err), r.recoveryNow())
+		})
+		if finishErr != nil {
+			authhelper.ObserveRecoveryStage(ctx, "control_blocked", finishErr, nil)
+		}
+	}
 	if err != nil {
-		if !aistudio.IsSessionFailure(err) {
-			err = aistudio.SessionError("STATE_UNAVAILABLE")
-		}
-		m, _ := state.Session()
-		if current, e := lease.ReloadStorageState(); e == nil {
-			m, _ = current.Session()
-		}
+		err = safeRemoteRecoveryFailure(err)
+		_ = lease.WithRemoteSession(cleanup, func(m *aistudio.SessionState) error {
+			if m.Remote.Pending != nil {
+				return aistudio.RecordRemoteRecoveryFailure(cleanup, account.StoragePath, m.Remote, remoteRecoveryCode(err), r.recoveryNow())
+			}
+			return nil
+		})
+		current, _ := lease.ReloadStorageState()
+		m, _ := current.Session()
 		authhelper.ObserveRecoveryStage(ctx, "commit_blocked", err, m)
 		return true, err
 	}
-	// Another lease may have completed a refresh while this lease waited.
-	// The pool deduplicates that work without invoking our callback; do not
-	// confuse a still-pending/retired recovery with a successful authentication.
+	// Deduplication is not itself proof that a still-pending recovery completed.
 	current, e := lease.ReloadStorageState()
 	if e != nil {
 		return true, aistudio.SessionError("STATE_UNAVAILABLE")
@@ -137,23 +161,48 @@ func (r *authRuntimeRefresher) tryRemoteRefresh(ctx context.Context) (bool, erro
 	if latest.Remote.Pending != nil || latest.Remote.RecoveryRequired {
 		return true, aistudio.SessionError("VERSION_CONFLICT")
 	}
+	if err := lease.CompleteRemoteRecovery(); err != nil {
+		return true, err
+	}
 	authhelper.ObserveRecoveryStage(ctx, "commit", nil, latest)
-	// Cookies have committed. A lost ack must not turn the successful recovery
-	// into a new auth workflow or discard the valid session. Next recovery retries it.
-	ackErr := lease.UpdateRemoteSession(ctx, func(s *aistudio.SessionState) error {
-		if s.Remote.Ack == nil {
-			return nil
+	if prepared {
+		controlErr := lease.WithRemoteSession(cleanup, func(m *aistudio.SessionState) error {
+			return aistudio.CompleteRemoteRecoveryAuth(cleanup, account.StoragePath, m.Remote, r.recoveryNow())
+		})
+		if controlErr == nil {
+			// Only this successful adoption may use the original, uncounted ACK.
+			if ackErr := r.retryRemoteAck(ctx, lease, true); ackErr != nil {
+				authhelper.ObserveRecoveryStage(ctx, "ack_pending", ackErr, latest)
+				if aistudio.IsSessionFailureCode(ackErr, "IDENTITY_MISMATCH") || aistudio.IsSessionFailureCode(ackErr, "VERSION_CONFLICT") {
+					return true, ackErr
+				}
+			}
+		} else {
+			authhelper.ObserveRecoveryStage(ctx, "control_blocked", controlErr, latest)
 		}
-		if err := r.remote.AckSession(ctx, s.Remote); err != nil {
-			return err
-		}
-		s.Remote.Ack = nil
-		return nil
-	})
-	if ackErr != nil {
-		authhelper.ObserveRecoveryStage(ctx, "ack_pending", ackErr, latest)
 	}
 	return true, nil
+}
+
+func (r *authRuntimeRefresher) observeRemoteRecovery(ctx context.Context, account *aistudio.Account) context.Context {
+	return authhelper.WithRecoveryObserver(ctx, func(v authhelper.RecoveryProgress) {
+		if r.requests == nil {
+			return
+		}
+		revision, lookup := "unknown", "not_applicable"
+		if v.Revision != nil {
+			revision = fmt.Sprint(*v.Revision)
+		}
+		if v.LookupOnly != nil {
+			lookup = fmt.Sprint(*v.LookupOnly)
+		}
+		message := fmt.Sprintf("remote_auth phase=%s code=%s operation=%s revision=%s pending_revision=%d epoch=%d cookie_revision=%d material_version=%d lookup_only=%s", v.Phase, v.Code, v.OperationID, revision, v.PendingRevision, v.Epoch, v.CookieRevision, v.MaterialVersion, lookup)
+		if id, _ := ctx.Value(remoteRecoveryRequestKey{}).(string); id != "" {
+			r.requests.logRequestProgress(id, account.Config.Label, "INFO", message)
+		} else {
+			r.requests.log(account.Config.Label, "INFO", message)
+		}
+	})
 }
 
 func isRemoteLease(ctx context.Context) bool {
