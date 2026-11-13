@@ -54,6 +54,8 @@ All three protocols keep real tool-call → tool-result → final-answer flows. 
 
 Explicit policies only restore signatures with known matching model/channel provenance. Native signatures without a call ID are also attributed. Unknown or incompatible opaque state is rejected, not silently deleted. Known strict-origin state cannot escape through unpinned `auto`; legacy bare-to-bare histories retain compatibility. Plain portable history is not artificially channel-bound. Provenance is bounded and in-memory: after restart/eviction an opaque history may require an explicit failure rather than guessed restoration.
 
+For tool-call history, the exact `skip_thought_signature_validator` marker is treated as an omitted signature, whether supplied on the call or its enclosing part. Matching cached signatures are still restored; a call known to belong to another model/channel is still rejected. This does not discard real signatures or make cross-model history automatically portable. When no signature is restored, the upstream encoder retains its existing skip-validator behavior.
+
 Structured-output contracts are not silently converted to plain text for anti-truncation. Unsupported combinations—including a compaction generation that cannot retain its requested schema—fail explicitly.
 
 ## Observability and storage

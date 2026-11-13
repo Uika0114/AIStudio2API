@@ -197,12 +197,24 @@ func opaqueHistoryError(reason string) error {
 // Bare-to-bare legacy histories retain their old behavior; known strict-origin
 // state cannot be sent through unpinned auto.
 func (store *thoughtSignatureStore) RestoreChecked(contents []aistudio.Content, selection aistudio.ModelSelection) error {
+	const skip = "skip_thought_signature_validator"
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	base, channel := strings.TrimSpace(selection.BaseModel), string(selection.Channel)
 	for _, content := range contents {
-		for _, part := range content.Parts {
+		for i := range content.Parts {
+			part := &content.Parts[i]
 			call := part.FunctionCall
+			// This tool-call marker carries no opaque state. Treat it as omitted
+			// without bypassing cache restoration or model/channel provenance.
+			if call != nil {
+				if part.ThoughtSignature == skip {
+					part.ThoughtSignature = ""
+				}
+				if call.ThoughtSignature == skip {
+					call.ThoughtSignature = ""
+				}
+			}
 			signature := part.ThoughtSignature
 			if call != nil && call.ThoughtSignature != "" {
 				if selection.Strict() && signature != "" && signature != call.ThoughtSignature {

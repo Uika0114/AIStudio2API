@@ -307,3 +307,47 @@ func TestThoughtSignatureRestoreCheckedProvenance(t *testing.T) {
 		})
 	}
 }
+
+func TestThoughtSignatureRestoreCheckedSkipValidator(t *testing.T) {
+	const skip = "skip_thought_signature_validator"
+	store := newThoughtSignatureStore()
+	selection := aistudio.ModelSelection{BaseModel: "model", Channel: aistudio.ChannelPlayground}
+	store.Remember([]aistudio.FunctionCall{{ID: "cached", Name: "lookup", Arguments: json.RawMessage("{}"), ThoughtSignature: "stored"}}, selection, selection.Channel, selection.BaseModel)
+	for _, tc := range []struct {
+		name, id, base, channel, callSignature, partSignature, wantCall, wantPart, wantError string
+	}{
+		{"portable_call", "foreign", "model", "playground", skip, "", "", "", ""},
+		{"portable_part", "foreign", "model", "playground", "", skip, "", "", ""},
+		{"portable_both", "foreign", "model", "playground", skip, skip, "", "", ""},
+		{"portable_without_id", "", "model", "playground", "", skip, "", "", ""},
+		{"cached_call", "cached", "model", "playground", skip, "", "stored", "", ""},
+		{"cached_part", "cached", "model", "playground", "", skip, "stored", "", ""},
+		{"cached_both", "cached", "model", "playground", skip, skip, "stored", "", ""},
+		{"cross_base", "cached", "other", "playground", skip, "", "", "", "tool call belongs to another model/channel"},
+		{"cross_channel", "cached", "model", "build", "", skip, "", "", "tool call belongs to another model/channel"},
+		{"strict_to_auto", "cached", "model", "", skip, skip, "", "", "strict-origin tool history cannot become auto"},
+		{"real_call", "foreign", "model", "playground", "stored", skip, "stored", "", ""},
+		{"real_part", "foreign", "model", "playground", skip, "stored", "", "stored", ""},
+		{"unknown_call", "foreign", "model", "playground", "unknown", skip, "unknown", "", "unknown or incompatible provenance"},
+		{"unknown_part", "foreign", "model", "playground", skip, "unknown", "", "unknown", "unknown or incompatible provenance"},
+		{"not_exact", "foreign", "model", "playground", skip + " ", "", skip + " ", "", "unknown or incompatible provenance"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := aistudio.FunctionCall{ID: tc.id, Name: "lookup", Arguments: json.RawMessage("{}"), ThoughtSignature: tc.callSignature}
+			contents := []aistudio.Content{{Parts: []aistudio.Part{{FunctionCall: &call, ThoughtSignature: tc.partSignature}}}}
+			err := store.RestoreChecked(contents, aistudio.ModelSelection{BaseModel: tc.base, Channel: aistudio.Channel(tc.channel)})
+			if tc.wantError == "" && err != nil || tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
+				t.Fatalf("restore error = %v, want %q", err, tc.wantError)
+			}
+			if call.ThoughtSignature != tc.wantCall || contents[0].Parts[0].ThoughtSignature != tc.wantPart {
+				t.Fatalf("signatures = %q/%q, want %q/%q", call.ThoughtSignature, contents[0].Parts[0].ThoughtSignature, tc.wantCall, tc.wantPart)
+			}
+		})
+	}
+	t.Run("non_tool_signature_is_not_removed", func(t *testing.T) {
+		contents := []aistudio.Content{{Parts: []aistudio.Part{{ThoughtSignature: skip}}}}
+		if err := store.RestoreChecked(contents, selection); err == nil || contents[0].Parts[0].ThoughtSignature != skip {
+			t.Fatalf("non-tool signature was treated as a portable tool call: %v", err)
+		}
+	})
+}

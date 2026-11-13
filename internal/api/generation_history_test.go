@@ -9,6 +9,68 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
+func TestSkipValidatorToolHistoryAcrossProtocols(t *testing.T) {
+	for _, protocol := range []string{"chat", "gemini"} {
+		for _, stream := range []bool{false, true} {
+			for _, remembered := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/stream=%t/remembered=%t", protocol, stream, remembered), func(t *testing.T) {
+					channel := aistudio.ChannelPlayground
+					model := "playground/gemini-4-argon"
+					service := &fakeService{models: []aistudio.Model{routingTestModel()}, generateEvents: toolLoopEvents(channel, true)}
+					handler := newRoutingTestHandler(t, service)
+					wantSignature := ""
+					if remembered {
+						service.generateEvents = toolLoopEvents(channel, false)
+						first := doJSON(t, handler, "POST", "/v1/chat/completions", `{"model":"playground/gemini-4-argon","messages":[{"role":"user","content":"use real"}]}`)
+						if first.Code != 200 || !strings.Contains(first.Body.String(), "fixture-signature-playground") {
+							t.Fatal(first.Code, first.Body.String())
+						}
+						service.mu.Lock()
+						service.generateEvents = toolLoopEvents(channel, true)
+						service.mu.Unlock()
+						wantSignature = "fixture-signature-playground"
+					}
+					path := "/v1/chat/completions"
+					body := fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"use real"},{"role":"assistant","tool_calls":[{"id":"call-real","type":"function","function":{"name":"real","arguments":"{\"value\":1}"},"extra_content":{"google":{"thought_signature":"skip_thought_signature_validator"}}}]},{"role":"tool","tool_call_id":"call-real","content":"done"}]}`, model, stream)
+					if protocol == "gemini" {
+						action := "generateContent"
+						if stream {
+							action = "streamGenerateContent"
+						}
+						path = "/v1beta/models/" + model + ":" + action
+						body = `{"contents":[{"role":"model","parts":[{"functionCall":{"id":"call-real","name":"real","args":{"value":1}},"thoughtSignature":"skip_thought_signature_validator"}]},{"role":"user","parts":[{"functionResponse":{"id":"call-real","name":"real","response":{"result":"done"}}}]}]}`
+					}
+					response := doJSON(t, handler, "POST", path, body)
+					if response.Code != 200 || !strings.Contains(response.Body.String(), "final answer") {
+						t.Fatal(response.Code, response.Body.String())
+					}
+					request := service.lastGenerate(t)
+					if request.Selection.Channel != channel || request.Selection.RequestedModel != model {
+						t.Fatalf("route changed: %+v", request.Selection)
+					}
+					var foundCall, foundResult bool
+					for _, content := range request.Contents {
+						for _, part := range content.Parts {
+							if call := part.FunctionCall; call != nil {
+								foundCall = true
+								if call.ID != "call-real" || call.Name != "real" || string(call.Arguments) != `{"value":1}` || call.ThoughtSignature != wantSignature || part.ThoughtSignature != "" {
+									t.Fatalf("tool history changed: %+v %+v", call, part)
+								}
+							}
+							if part.FunctionResult != nil {
+								foundResult = true
+							}
+						}
+					}
+					if !foundCall || !foundResult {
+						t.Fatal("tool-call/result history lost")
+					}
+				})
+			}
+		}
+	}
+}
+
 func protocolObjects(t *testing.T, body string, stream bool) []map[string]any {
 	t.Helper()
 	if !stream {
