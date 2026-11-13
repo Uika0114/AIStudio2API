@@ -71,9 +71,9 @@ func TestQuotaReportedUsageDeduplicatesAndColdReads(t *testing.T) {
 	quotaValue(t, report.Requests.Limit, 250)
 	quotaValue(t, report.Requests.Used, 3)
 	quotaValue(t, report.Requests.Remaining, 247)
-	quotaValue(t, report.Tokens.Limit, 45000000)
+	quotaValue(t, report.Tokens.Limit, 35000000)
 	quotaValue(t, report.Tokens.Used, 200000)
-	quotaValue(t, report.Tokens.Remaining, 44800000)
+	quotaValue(t, report.Tokens.Remaining, 34800000)
 	if report.Unreported != 0 || report.InFlight != 0 || len(report.Accounts) != 2 {
 		t.Fatalf("bad report: %+v", report)
 	}
@@ -93,7 +93,7 @@ func TestQuotaReportedUsageDeduplicatesAndColdReads(t *testing.T) {
 	quotaValue(t, quotaRead(t, reopened, quotaMembers(), now).Requests.Used, 4)
 }
 
-func TestQuota429LocksBothDimensionsUntil16WithoutInventingUsage(t *testing.T) {
+func TestQuotaUnknown429KeepsBothBalancesUnknownUntilReset(t *testing.T) {
 	store, _, now := quotaFixture(t)
 	store.RecordQuotaAttempt(quotaSend("first", "a", now, 1234))
 	limited := quotaSend("limit", "a", now, -1)
@@ -105,18 +105,18 @@ func TestQuota429LocksBothDimensionsUntil16WithoutInventingUsage(t *testing.T) {
 	if !a.Exhausted429 {
 		t.Fatal("429 state missing")
 	}
-	quotaValue(t, a.Tokens.Remaining, 0)
-	quotaValue(t, a.Requests.Remaining, 0)
+	quotaUnknown(t, a.Tokens.Remaining)
+	quotaUnknown(t, a.Requests.Remaining)
 	quotaValue(t, a.Tokens.Used, 1234)
 	quotaValue(t, a.Requests.Used, 2)
-	quotaValue(t, report.Tokens.Remaining, 30000000)
-	quotaValue(t, report.Requests.Remaining, 200)
-	// A later successful send doesn't silently undo this window's conservative latch.
+	quotaUnknown(t, report.Tokens.Remaining)
+	quotaUnknown(t, report.Requests.Remaining)
+	// A later successful send cannot resolve which dimension the earlier 429 exhausted.
 	store.RecordQuotaAttempt(quotaSend("after-minute-cooldown", "a", now, 100))
-	quotaValue(t, quotaRead(t, store, quotaMembers(), now).Accounts[0].Tokens.Remaining, 0)
+	quotaUnknown(t, quotaRead(t, store, quotaMembers(), now).Accounts[0].Tokens.Remaining)
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	fresh := quotaRead(t, store, quotaMembers(), next)
-	quotaValue(t, fresh.Tokens.Remaining, 45000000)
+	quotaValue(t, fresh.Tokens.Remaining, 35000000)
 	quotaValue(t, fresh.Requests.Remaining, 250)
 	if fresh.Accounts[0].Exhausted429 {
 		t.Fatal("429 leaked into new window")
@@ -134,7 +134,7 @@ func TestQuotaCoarseMissingUsageAndScope(t *testing.T) {
 	store.RecordQuotaAttempt(pending)
 	report := quotaRead(t, store, quotaMembers(), now)
 	quotaValue(t, report.Requests.Used, 1)
-	quotaValue(t, report.Tokens.Remaining, 45000000)
+	quotaValue(t, report.Tokens.Remaining, 35000000)
 	if report.InFlight != 1 || report.Unreported != 1 {
 		t.Fatalf("missing quality counts: %+v", report)
 	}
@@ -184,7 +184,7 @@ func TestQuotaInitialPartialMembersAndBoundary(t *testing.T) {
 	a.RateLimited = true
 	a.Stage = "failed"
 	store.RecordQuotaAttempt(a)
-	quotaValue(t, quotaRead(t, store, quotaMembers()[:1], now).Tokens.Remaining, 0)
+	quotaUnknown(t, quotaRead(t, store, quotaMembers()[:1], now).Tokens.Remaining)
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	members := append(quotaMembers(), api.QuotaMember{ID: "a", Label: "renamed duplicate", Tier: "Ultra", Enabled: true}, api.QuotaMember{ID: "off", Tier: "Ultra", Enabled: false}, api.QuotaMember{ID: "unknown", Tier: "Plus", Enabled: true})
 	fresh := quotaRead(t, store, members, next)

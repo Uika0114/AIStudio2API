@@ -59,10 +59,16 @@ type outputHTTPPreparer struct {
 	build, unary      bool
 	name, scenario    string
 	cancelAfterDecode context.CancelFunc
+	quotaMessage      string
+	tierHeader        string
 }
 
 func (p *outputHTTPPreparer) Prepare(_ context.Context, r aistudio.ProtectedRequest) (aistudio.PreparedProtectedRequest, error) {
-	return aistudio.PreparedProtectedRequest{Headers: r.Headers.Clone(), Body: r.Body}, nil
+	headers := r.Headers.Clone()
+	if p.tierHeader != "" {
+		headers.Set("X-AIStudio-G1-Tier", p.tierHeader)
+	}
+	return aistudio.PreparedProtectedRequest{Headers: headers, Body: r.Body}, nil
 }
 func (p *outputHTTPPreparer) BrowserStorageState(context.Context) (aistudio.StorageState, error) {
 	return p.state, nil
@@ -72,7 +78,12 @@ func (p *outputHTTPPreparer) SendProtected(context.Context, aistudio.ProtectedRe
 	defer p.mu.Unlock()
 	p.calls++
 	if p.scenario == "http429" {
-		return &aistudio.RPCResponse{StatusCode: 429, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[8,"synthetic limited"]`))}, nil
+		message := p.quotaMessage
+		if message == "" {
+			message = "synthetic limited"
+		}
+		body, _ := json.Marshal([]any{8, message})
+		return &aistudio.RPCResponse{StatusCode: 429, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}, nil
 	}
 	frame := func(text string, count int64, withCount, finish, atomic bool) []byte {
 		if p.build {

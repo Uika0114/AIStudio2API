@@ -420,7 +420,7 @@ export interface QuotaAccountEstimate {
 
 export interface QuotaEstimateReport {
   channel: 'playground'
-  model: 'gemini-4-argon' | 'gemini-4-carbon'
+  model: 'gemini-4-argon' | 'gemini-4-carbon' | 'gemini-4-hydrogen'
   period_from: string
   reset_at: string
   updated_at: string

@@ -7,6 +7,8 @@ defineProps<{
   error: string
   carbonReport: QuotaEstimateReport | null
   carbonError: string
+  hydrogenReport: QuotaEstimateReport | null
+  hydrogenError: string
 }>()
 </script>
 
@@ -18,6 +20,12 @@ defineProps<{
       :report="carbonError ? null : carbonReport"
       :error="carbonError"
       model-label="Carbon"
+    />
+    <QuotaBars
+      v-if="(hydrogenReport?.accounts?.length ?? 0) > 0"
+      :report="hydrogenError ? null : hydrogenReport"
+      :error="hydrogenError"
+      model-label="Hydrogen"
     />
   </div>
 </template>

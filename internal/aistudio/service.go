@@ -173,7 +173,7 @@ func (t *WorkerProtectedTransport) doBrowserPrepared(
 	if rpc.Method == assistantInitMethod {
 		observeGenerationProgress(ctx)
 	}
-	markPhysicalSend(ctx)
+	markPhysicalSend(ctx, headers)
 	response, err := worker.SendProtected(ctx, ProtectedRequest{
 		URL: rpc.URL, Headers: headers, Body: rpc.Body,
 	})
@@ -255,7 +255,7 @@ func (t *WorkerProtectedTransport) doPrepared(
 		return nil, err
 	}
 	reportRequestPhase(ctx, RequestPhaseSendingUpstream)
-	markPhysicalSend(ctx)
+	markPhysicalSend(ctx, rpc.Header)
 	response, err := t.transport.Do(ctx, rpc)
 	if err != nil {
 		return nil, err

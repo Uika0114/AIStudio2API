@@ -69,7 +69,7 @@ func TestQuotaHistoryBootstrapsAndReplaysWithoutDoubleCounting(t *testing.T) {
 	quotaValue(t, report.Requests.Used, 2)
 	quotaValue(t, report.Requests.Remaining, 248)
 	quotaValue(t, report.Tokens.Used, 250000)
-	quotaValue(t, report.Tokens.Remaining, 44750000)
+	quotaValue(t, report.Tokens.Remaining, 34750000)
 	if report.Coverage != "history_estimate" || report.History == nil || report.History.Attempts != 2 || !report.ObservedSince.Equal(from.Add(30*time.Minute)) {
 		t.Fatalf("history coverage wrong: %+v", report)
 	}
@@ -112,7 +112,7 @@ func TestQuotaHistoryBootstrapsAndReplaysWithoutDoubleCounting(t *testing.T) {
 	quotaValue(t, updated.Tokens.Used, 275000)
 	fresh := quotaRead(t, late, quotaMembers(), from.Add(24*time.Hour))
 	quotaValue(t, fresh.Requests.Used, 0)
-	quotaValue(t, fresh.Tokens.Remaining, 45000000)
+	quotaValue(t, fresh.Tokens.Remaining, 35000000)
 	if fresh.History != nil {
 		t.Fatal("historical window leaked into next day")
 	}
@@ -154,9 +154,9 @@ func TestQuotaHistoryMissingUsage429AndScope(t *testing.T) {
 	report := quotaRead(t, store, quotaMembers(), now)
 	quotaValue(t, report.Requests.Used, 3)
 	quotaValue(t, report.Tokens.Used, 0)
-	quotaValue(t, report.Accounts[0].Requests.Remaining, 0)
-	quotaValue(t, report.Accounts[0].Tokens.Remaining, 0)
-	quotaValue(t, report.Tokens.Remaining, 30000000)
+	quotaUnknown(t, report.Accounts[0].Requests.Remaining)
+	quotaUnknown(t, report.Accounts[0].Tokens.Remaining)
+	quotaUnknown(t, report.Tokens.Remaining, report.Requests.Remaining)
 	if report.Unreported != 3 || report.InFlight != 0 || !report.Accounts[0].Exhausted429 || report.Accounts[1].Exhausted429 {
 		t.Fatalf("bad historical 429/missing handling: %+v", report)
 	}

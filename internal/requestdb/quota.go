@@ -18,6 +18,7 @@ const quotaSchema = `CREATE TABLE IF NOT EXISTS quota17_tracking (
  id INTEGER PRIMARY KEY CHECK(id=1), observed_since INTEGER NOT NULL, clean INTEGER NOT NULL, gap_at INTEGER NOT NULL DEFAULT 0, closed_at INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS quota17_argon_attempts (
  epoch TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, account TEXT NOT NULL,
+ quota_tier TEXT NOT NULL DEFAULT '',
  window INTEGER NOT NULL, sent_at INTEGER NOT NULL, tokens INTEGER NOT NULL,
  reported INTEGER NOT NULL, ended INTEGER NOT NULL, limited INTEGER NOT NULL,
  PRIMARY KEY(epoch,id));
@@ -53,8 +54,11 @@ func (store *Store) openQuota() error {
 	if _, err = conn.ExecContext(ctx, `PRAGMA busy_timeout=25`); err != nil {
 		return fail(err)
 	}
+	if _, err = conn.ExecContext(ctx, quotaLimitsSchema); err != nil {
+		return fail(err)
+	}
 	now := time.Now().UTC()
-	for _, scope := range []quotaScope{argonQuota, carbonQuota} {
+	for _, scope := range []quotaScope{argonQuota, carbonQuota, hydrogenQuota} {
 		if err = store.openQuotaScope(ctx, conn, scope, now); err != nil {
 			return fail(err)
 		}
@@ -79,7 +83,7 @@ func (store *Store) quotaFailure(scope quotaScope, at time.Time) {
 }
 
 // RecordQuotaAttempt never changes generation control flow. It records only numeric,
-// credential/body-free facts from physical PG Argon/Carbon sends, not root HTTP usage.
+// credential/body-free facts from tracked physical Playground sends, not root HTTP usage.
 func (store *Store) RecordQuotaAttempt(attempt aistudio.GenerationAttempt) {
 	if store == nil || !attempt.Sent || attempt.Channel != aistudio.ChannelPlayground {
 		return
@@ -92,7 +96,22 @@ func (store *Store) RecordQuotaAttempt(attempt aistudio.GenerationAttempt) {
 		store.quotaFailure(scope, time.Now())
 		return
 	}
-	item := quotaWrite{model: scope.model, id: attempt.ID, account: attempt.AccountID, revision: attempt.Revision, sentAt: attempt.SentAt, ended: quotaTerminal(attempt.Stage), limited: attempt.RateLimited || attempt.StatusCode == 429}
+	tier := strings.ToLower(attempt.QuotaTier)
+	if tier != "pro" && tier != "ultra" {
+		tier = ""
+	}
+	limits := quotaLimitObservation(attempt)
+	limited := 0
+	if attempt.RateLimited || attempt.StatusCode == 429 {
+		limited = 1 // Legacy or unclassified 429: the exhausted dimension is unknown.
+		if limits.tokens != nil {
+			limited = 2
+		}
+		if limits.requests != nil {
+			limited = (limited &^ 1) | 4
+		}
+	}
+	item := quotaWrite{model: scope.model, id: attempt.ID, account: attempt.AccountID, tier: tier, revision: attempt.Revision, sentAt: attempt.SentAt, ended: quotaTerminal(attempt.Stage), limited: limited, limits: limits}
 	if attempt.Usage != nil && attempt.UsageSource == "upstream" && attempt.Usage.TotalTokens >= 0 && attempt.Usage.TotalTokens < 1<<53 {
 		item.tokens = attempt.Usage.TotalTokens
 		item.reported = true
@@ -111,13 +130,16 @@ func (store *Store) RecordQuotaAttempt(attempt aistudio.GenerationAttempt) {
 }
 
 type quotaWrite struct {
-	model                    string
-	id, account              string
-	revision                 uint64
-	sentAt                   time.Time
-	tokens                   int64
-	reported, ended, limited bool
-	barrier                  chan struct{}
+	model           string
+	id, account     string
+	tier            string
+	revision        uint64
+	sentAt          time.Time
+	tokens          int64
+	reported, ended bool
+	limited         int // 1 unknown, 2 daily tokens, 4 daily requests; old boolean rows remain valid.
+	barrier         chan struct{}
+	limits          quotaLimitUpdate
 }
 
 func (store *Store) runQuota() {
@@ -141,14 +163,19 @@ func (store *Store) writeQuota(item quotaWrite) {
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
 	defer cancel()
 	_, err := store.quotaConn.ExecContext(ctx, `INSERT INTO `+scope.attempts+`
- (epoch,id,revision,account,window,sent_at,tokens,reported,ended,limited) VALUES(?,?,?,?,?,?,?,?,?,?)
+ (epoch,id,revision,account,quota_tier,window,sent_at,tokens,reported,ended,limited) VALUES(?,?,?,?,?,?,?,?,?,?,?)
  ON CONFLICT(epoch,id) DO UPDATE SET revision=excluded.revision,
+ quota_tier=CASE WHEN `+scope.attempts+`.quota_tier='' THEN excluded.quota_tier ELSE `+scope.attempts+`.quota_tier END,
  tokens=CASE WHEN excluded.reported=1 THEN excluded.tokens ELSE `+scope.attempts+`.tokens END,
  reported=MAX(`+scope.attempts+`.reported,excluded.reported),
  ended=MAX(`+scope.attempts+`.ended,excluded.ended),
- limited=MAX(`+scope.attempts+`.limited,excluded.limited)
+ limited=CASE WHEN excluded.limited>1 THEN ((`+scope.attempts+`.limited | excluded.limited) & 6)
+ ELSE MAX(`+scope.attempts+`.limited,excluded.limited) END
  WHERE excluded.revision>`+scope.attempts+`.revision AND excluded.account=`+scope.attempts+`.account AND excluded.sent_at=`+scope.attempts+`.sent_at`,
-		store.quotaEpoch, item.id, item.revision, item.account, QuotaWindow(item.sentAt).UnixMilli(), item.sentAt.UnixMilli(), item.tokens, item.reported, item.ended, item.limited)
+		store.quotaEpoch, item.id, item.revision, item.account, item.tier, QuotaWindow(item.sentAt).UnixMilli(), item.sentAt.UnixMilli(), item.tokens, item.reported, item.ended, item.limited)
+	if err == nil {
+		err = store.writeQuotaLimits(ctx, item)
+	}
 	if err != nil {
 		store.quotaFailure(scope, item.sentAt)
 	}
@@ -194,7 +221,7 @@ func (store *Store) closeQuota() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	for _, scope := range []quotaScope{argonQuota, carbonQuota} {
+	for _, scope := range []quotaScope{argonQuota, carbonQuota, hydrogenQuota} {
 		_, gap := store.quotaTracking(scope)
 		if _, err := store.quotaConn.ExecContext(ctx, `UPDATE `+scope.tracking+` SET clean=1,gap_at=MAX(gap_at,?),closed_at=? WHERE id=1`, gap.Load(), time.Now().UnixMilli()); err != nil && store.log != nil {
 			store.log("WARN", "额度观察未完成正常关闭；下次启动标记覆盖缺口")
@@ -206,26 +233,29 @@ func (store *Store) closeQuota() {
 }
 
 type quotaUsage struct {
-	requests, tokens, inFlight, unreported int64
-	limited                                bool
+	requests, tokens, inFlight, unreported         int64
+	unknownLimited, tokensLimited, requestsLimited bool
 }
 
 func quotaInt(value int64) *int64 { return &value }
-func quotaCaps(tier string) (requests, tokens int64) {
+func quotaCaps(model, tier string) (requests, tokens int64) {
 	switch strings.ToLower(tier) {
 	case "ultra":
-		return 200, 30000000
+		if model == hydrogenQuota.model {
+			return 200, 30000000
+		}
+		return 200, 20000000
 	case "pro":
 		return 50, 15000000
 	}
 	return 0, 0
 }
 
-func quotaBalance(limit, used int64, complete, limited bool) api.QuotaBalance {
+func quotaBalance(limit, used int64, complete, limited, unknown bool) api.QuotaBalance {
 	value := api.QuotaBalance{Limit: quotaInt(limit), Used: quotaInt(used)}
 	if limited {
 		value.Remaining = quotaInt(0)
-	} else if complete {
+	} else if complete && !unknown {
 		value.Remaining = quotaInt(max(int64(0), limit-used))
 	}
 	return value
@@ -275,55 +305,88 @@ func (store *Store) QuotaSnapshotForModel(ctx context.Context, members []api.Quo
 	if gap := gapState.Load(); gap >= from.UnixMilli() && gap < report.ResetAt.UnixMilli() {
 		report.Coverage = "gap"
 	}
-	rows, err := store.quotaConn.QueryContext(ctx, `SELECT account,COUNT(*),COALESCE(SUM(tokens),0),SUM(CASE WHEN ended=0 THEN 1 ELSE 0 END),SUM(CASE WHEN reported=0 THEN 1 ELSE 0 END),MAX(limited) FROM `+scope.attempts+` WHERE window=? GROUP BY account`, from.UnixMilli())
+	rows, err := store.quotaConn.QueryContext(ctx, `SELECT account,quota_tier,COUNT(*),COALESCE(SUM(tokens),0),
+ SUM(CASE WHEN ended=0 THEN 1 ELSE 0 END),SUM(CASE WHEN reported=0 THEN 1 ELSE 0 END),
+ MAX((limited & 1)!=0),MAX((limited & 2)!=0),MAX((limited & 4)!=0)
+ FROM `+scope.attempts+` WHERE window=? GROUP BY account,quota_tier`, from.UnixMilli())
 	if err != nil {
 		return api.QuotaReport{}, err
 	}
-	usage := make(map[string]quotaUsage)
+	usage := make(map[string]map[string]quotaUsage)
 	for rows.Next() {
-		var id string
+		var id, tier string
 		var u quotaUsage
-		var limited int
-		if err = rows.Scan(&id, &u.requests, &u.tokens, &u.inFlight, &u.unreported, &limited); err != nil {
+		if err = rows.Scan(&id, &tier, &u.requests, &u.tokens, &u.inFlight, &u.unreported, &u.unknownLimited, &u.tokensLimited, &u.requestsLimited); err != nil {
 			_ = rows.Close()
 			return api.QuotaReport{}, err
 		}
-		u.limited = limited != 0
-		usage[id] = u
+		if usage[id] == nil {
+			usage[id] = make(map[string]quotaUsage)
+		}
+		usage[id][tier] = u
 	}
 	err = errors.Join(rows.Err(), rows.Close())
 	if err != nil {
 		return api.QuotaReport{}, err
 	}
+	limits, err := store.readQuotaLimits(ctx, scope.model)
+	if err != nil {
+		return api.QuotaReport{}, err
+	}
 	seen := make(map[string]bool)
 	var reqLimit, tokLimit, reqUsed, tokUsed, reqRemaining, tokRemaining int64
-	included, allKnown := 0, true
+	included, reqKnown, tokKnown := 0, true, true
 	for _, member := range members {
 		if !member.Enabled || member.ID == "" || seen[member.ID] {
 			continue
 		}
 		seen[member.ID] = true
-		// Carbon supply is Ultra-only; Pro/unknown members are not a Carbon pool.
-		if scope == carbonQuota && !strings.EqualFold(member.Tier, "ultra") {
+		// Carbon and Hydrogen use the user-approved Ultra-only estimate, not a verified upstream pool.
+		if (scope == carbonQuota || scope == hydrogenQuota) && !strings.EqualFold(member.Tier, "ultra") {
 			report.ExcludedAccounts++
 			continue
 		}
-		u := usage[member.ID]
-		account := api.QuotaAccount{ID: member.ID, Label: member.Label, Tier: member.Tier, State: member.State, Exhausted429: u.limited, InFlight: u.inFlight, Unreported: u.unreported}
-		r, t := quotaCaps(member.Tier)
+		var u quotaUsage
+		for tier, observed := range usage[member.ID] {
+			// Consumption remains an account-level coarse observation: a tier
+			// change is not evidence that Google reset prior consumption.
+			u.requests += observed.requests
+			u.tokens += observed.tokens
+			u.inFlight += observed.inFlight
+			u.unreported += observed.unreported
+			if tier == "" {
+				u.unknownLimited = u.unknownLimited || observed.unknownLimited || observed.tokensLimited || observed.requestsLimited
+			} else if tier == strings.ToLower(member.Tier) {
+				u.unknownLimited = u.unknownLimited || observed.unknownLimited
+				u.tokensLimited = u.tokensLimited || observed.tokensLimited
+				u.requestsLimited = u.requestsLimited || observed.requestsLimited
+			}
+		}
+		account := api.QuotaAccount{ID: member.ID, Label: member.Label, Tier: member.Tier, State: member.State, Exhausted429: u.unknownLimited || u.tokensLimited || u.requestsLimited, InFlight: u.inFlight, Unreported: u.unreported}
+		r, t := quotaCaps(scope.model, member.Tier)
 		if r > 0 {
+			if limit, ok := limits[quotaLimitKey{strings.ToLower(member.Tier), member.ID, "requests"}]; ok {
+				r = limit
+			}
+			if limit, ok := limits[quotaLimitKey{strings.ToLower(member.Tier), member.ID, "tokens"}]; ok {
+				t = limit
+			}
 			account.Included = true
-			account.Requests = quotaBalance(r, u.requests, estimateKnown, u.limited)
-			account.Tokens = quotaBalance(t, u.tokens, estimateKnown, u.limited)
+			account.Requests = quotaBalance(r, u.requests, estimateKnown, u.requestsLimited, u.unknownLimited)
+			account.Tokens = quotaBalance(t, u.tokens, estimateKnown, u.tokensLimited, u.unknownLimited)
 			included++
 			reqLimit += r
 			tokLimit += t
 			reqUsed += u.requests
 			tokUsed += u.tokens
-			if account.Requests.Remaining == nil || account.Tokens.Remaining == nil {
-				allKnown = false
+			if account.Requests.Remaining == nil {
+				reqKnown = false
 			} else {
 				reqRemaining += *account.Requests.Remaining
+			}
+			if account.Tokens.Remaining == nil {
+				tokKnown = false
+			} else {
 				tokRemaining += *account.Tokens.Remaining
 			}
 			report.InFlight += u.inFlight
@@ -337,8 +400,10 @@ func (store *Store) QuotaSnapshotForModel(ctx context.Context, members []api.Quo
 	if included > 0 {
 		report.Requests = api.QuotaBalance{Limit: quotaInt(reqLimit), Used: quotaInt(reqUsed)}
 		report.Tokens = api.QuotaBalance{Limit: quotaInt(tokLimit), Used: quotaInt(tokUsed)}
-		if allKnown {
+		if reqKnown {
 			report.Requests.Remaining = quotaInt(reqRemaining)
+		}
+		if tokKnown {
 			report.Tokens.Remaining = quotaInt(tokRemaining)
 		}
 	}

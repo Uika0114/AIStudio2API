@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -72,7 +73,8 @@ func beginPhysicalAttempt(ctx context.Context, request GenerateRequest, rpc RPCR
 		ID: fmt.Sprintf("%s/attempt-%d", request.ID, generationAttemptSequence.Add(1)), RequestID: request.ID,
 		RequestedModel: requested, BaseModel: base, RequestedChannel: request.Selection.Channel,
 		AntiTruncation: request.Selection.AntiTruncation, AccountID: accountID, Method: rpc.Method, Mode: mode,
-		Reason: reason, ContinuationRound: request.continuationRound, Stage: "preparing", StartedAt: now, UsageSource: "unknown",
+		QuotaTier: dailyQuotaTier(rpc.Header),
+		Reason:    reason, ContinuationRound: request.continuationRound, Stage: "preparing", StartedAt: now, UsageSource: "unknown",
 	}}
 	attempt.output = newGenerationTiming(ctx, attempt.value)
 	attempt.update(func(*GenerationAttempt) {})
@@ -89,6 +91,7 @@ func (attempt *physicalAttempt) update(change func(*GenerationAttempt)) {
 	attempt.value.DurationMS = time.Since(attempt.value.StartedAt).Milliseconds()
 	snapshot := attempt.value
 	snapshot.OutputTiming = attempt.output.snapshot()
+	snapshot.QuotaLimits = cloneDailyQuotaLimits(snapshot.QuotaLimits)
 	if snapshot.Usage != nil {
 		copied := *snapshot.Usage
 		snapshot.Usage = &copied
@@ -100,13 +103,16 @@ func (attempt *physicalAttempt) update(change func(*GenerationAttempt)) {
 
 // Mark immediately before the native send. This is an attempted send, not proof
 // that Google executed or billed it. Receiving headers is tracked separately.
-func markPhysicalSend(ctx context.Context) {
+func markPhysicalSend(ctx context.Context, headers ...http.Header) {
 	attempt, _ := ctx.Value(physicalAttemptKey{}).(*physicalAttempt)
 	if attempt == nil {
 		return
 	}
 	attempt.update(func(value *GenerationAttempt) {
 		attempt.output.markSend()
+		if !value.Sent && len(headers) > 0 {
+			value.QuotaTier = dailyQuotaTier(headers[0])
+		}
 		value.Sent = true
 		if value.SentAt.IsZero() {
 			value.SentAt = time.Now().UTC()
@@ -145,6 +151,7 @@ func (attempt *physicalAttempt) fail(err error) {
 		return
 	}
 	attempt.update(func(value *GenerationAttempt) {
+		attempt.captureQuotaError(value, err)
 		// A later local projection failure cannot rewrite an already observed
 		// upstream completion into a fictitious extra failed physical request.
 		var rpcFailure *RPCError

@@ -213,6 +213,7 @@ func validateRPCResponse(method string, response *RPCResponse) (*RPCResponse, er
 			return nil, fmt.Errorf("读取 AI Studio %s 错误响应: %w", method, readErr)
 		}
 		rpcError := DecodeRPCError(method, response.StatusCode, raw)
+		response.attempt.observeQuotaError(rpcError)
 		if rpcError.RetryDelay <= 0 {
 			value := strings.TrimSpace(response.Header.Get("Retry-After"))
 			if delay, err := time.ParseDuration(value + "s"); err == nil && delay > 0 {

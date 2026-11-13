@@ -54,9 +54,9 @@ func TestCarbonQuotaSeparateModelTablesAndLegacyArgonRead(t *testing.T) {
 	quotaValue(t, argon.Tokens.Used, 1200)
 	quotaValue(t, argon.Requests.Used, 1)
 	report := carbonRead(t, store, quotaMembers(), now)
-	quotaValue(t, report.Tokens.Limit, 30000000)
+	quotaValue(t, report.Tokens.Limit, 20000000)
 	quotaValue(t, report.Tokens.Used, 3400)
-	quotaValue(t, report.Tokens.Remaining, 30000000-3400)
+	quotaValue(t, report.Tokens.Remaining, 20000000-3400)
 	quotaValue(t, report.Requests.Limit, 200)
 	quotaValue(t, report.Requests.Used, 1)
 	if len(report.Accounts) != 1 || report.Accounts[0].ID != "b" || report.ExcludedAccounts != 1 {
@@ -112,17 +112,17 @@ func TestCarbonQuota429AndLateUsageStayInOwnModelAndWindow(t *testing.T) {
 	report := carbonRead(t, store, quotaMembers(), now)
 	quotaValue(t, report.Tokens.Used, 3000)
 	quotaValue(t, report.Requests.Used, 2)
-	quotaValue(t, report.Requests.Remaining, 0)
-	quotaValue(t, report.Tokens.Remaining, 0)
+	quotaUnknown(t, report.Requests.Remaining)
+	quotaUnknown(t, report.Tokens.Remaining)
 	if !report.Accounts[0].Exhausted429 || report.Unreported != 1 {
 		t.Fatal("Carbon 429/missing-usage metadata missing")
 	}
 	quotaValue(t, quotaRead(t, store, quotaMembers(), now).Requests.Remaining, 249)
 	store.RecordQuotaAttempt(carbonSend("after-minute-cooldown", "b", now, 10))
-	quotaValue(t, carbonRead(t, store, quotaMembers(), now).Tokens.Remaining, 0)
+	quotaUnknown(t, carbonRead(t, store, quotaMembers(), now).Tokens.Remaining)
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	fresh := carbonRead(t, store, quotaMembers(), next)
-	quotaValue(t, fresh.Tokens.Remaining, 30000000)
+	quotaValue(t, fresh.Tokens.Remaining, 20000000)
 	quotaValue(t, fresh.Requests.Remaining, 200)
 	limited.Revision++
 	limited.Usage = &aistudio.Usage{TotalTokens: 100}
@@ -134,7 +134,7 @@ func TestCarbonQuota429AndLateUsageStayInOwnModelAndWindow(t *testing.T) {
 	argon429 := quotaSend("argon429", "b", next, -1)
 	argon429.StatusCode = 429
 	store.RecordQuotaAttempt(argon429)
-	quotaValue(t, carbonRead(t, store, quotaMembers(), next).Tokens.Remaining, 30000000)
+	quotaValue(t, carbonRead(t, store, quotaMembers(), next).Tokens.Remaining, 20000000)
 }
 
 func TestCarbonQuotaPartialScopeAndMissingUsage(t *testing.T) {
@@ -146,7 +146,7 @@ func TestCarbonQuotaPartialScopeAndMissingUsage(t *testing.T) {
 	if report.Coverage != "partial" || report.Tokens.Remaining != nil || report.InFlight != 1 || report.Unreported != 1 {
 		t.Fatalf("Carbon borrowed old Argon coverage: %+v", report)
 	}
-	quotaValue(t, quotaRead(t, store, quotaMembers(), now).Tokens.Remaining, 45000000)
+	quotaValue(t, quotaRead(t, store, quotaMembers(), now).Tokens.Remaining, 35000000)
 	pending.Revision++
 	pending.Stage = "cancelled"
 	pending.Usage = &aistudio.Usage{TotalTokens: 7654}

@@ -118,7 +118,7 @@ func TestQuotaClientHTTPColdReadAndReadOnlyDisplay(t *testing.T) {
 						t.Fatalf("generation %d %s", rec.Code, rec.Body.String())
 					}
 					report := quotaHTTPRead(t, handler)
-					if report.Tokens.Used == nil || *report.Tokens.Used != 1520 || report.Requests.Used == nil || *report.Requests.Used != 1 || report.Tokens.Remaining == nil || *report.Tokens.Remaining != 30000000-1520 {
+					if report.Tokens.Used == nil || *report.Tokens.Used != 1520 || report.Requests.Used == nil || *report.Requests.Used != 1 || report.Tokens.Remaining == nil || *report.Tokens.Remaining != 20000000-1520 {
 						t.Fatalf("real producer counts: %+v", report)
 					}
 					if preparer.calls != 1 {
@@ -167,15 +167,15 @@ func TestQuotaNativeMissingUsageAnd429(t *testing.T) {
 			if report.Tokens.Used == nil || *report.Tokens.Used != 0 || report.Unreported != 1 {
 				t.Fatalf("invented tokens without upstream usage: %+v", report)
 			}
-			if scenario == "http429" && (report.Tokens.Remaining == nil || *report.Tokens.Remaining != 0 || report.Requests.Remaining == nil || *report.Requests.Remaining != 0) {
-				t.Fatal("429 didn't clear both display balances")
+			if scenario == "http429" && (report.Tokens.Remaining != nil || report.Requests.Remaining != nil) {
+				t.Fatal("generic 429 invented a known remaining balance")
 			}
 			if scenario == "http429" {
-				// Keep the same pool and zero display; only the fake response becomes healthy.
+				// Keep the same pool and unknown balances; only the fake response becomes healthy.
 				preparer.scenario = "measured"
 				again := quotaHTTPGenerate(t, handler, "playground/gemini-4-argon", "chat", false)
 				if again.Code != 200 || preparer.calls != 2 {
-					t.Fatal("zero display blocked generation")
+					t.Fatal("unknown display blocked generation")
 				}
 				if quotaHTTPRead(t, handler).Accounts[0].Exhausted429 != true {
 					t.Fatal("successful generation reset the 429 display latch")

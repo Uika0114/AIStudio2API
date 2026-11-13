@@ -34,6 +34,8 @@ const quotaReport = shallowRef<QuotaEstimateReport | null>(null)
 const quotaError = ref('')
 const carbonQuotaReport = shallowRef<QuotaEstimateReport | null>(null)
 const carbonQuotaError = ref('')
+const hydrogenQuotaReport = shallowRef<QuotaEstimateReport | null>(null)
+const hydrogenQuotaError = ref('')
 let quotaController: AbortController | undefined
 let quotaLoading = false
 let quotaFetchedAt = 0
@@ -52,9 +54,12 @@ async function loadQuota(): Promise<void> {
       if (model === 'gemini-4-argon') {
         quotaReport.value = value
         quotaError.value = ''
-      } else {
+      } else if (model === 'gemini-4-carbon') {
         carbonQuotaReport.value = value
         carbonQuotaError.value = ''
+      } else {
+        hydrogenQuotaReport.value = value
+        hydrogenQuotaError.value = ''
       }
     } catch (reason) {
       if (current.signal.aborted) return
@@ -63,12 +68,13 @@ async function loadQuota(): Promise<void> {
         quotaError.value = errorText(reason)
       } else {
         // Retain membership visibility, but do not display a stale balance on errors.
-        carbonQuotaError.value = errorText(reason)
+        if (model === 'gemini-4-carbon') carbonQuotaError.value = errorText(reason)
+        else hydrogenQuotaError.value = errorText(reason)
       }
     }
   }
   try {
-    await Promise.all([read('gemini-4-argon'), read('gemini-4-carbon')])
+    await Promise.all([read('gemini-4-argon'), read('gemini-4-carbon'), read('gemini-4-hydrogen')])
   } finally {
     if (quotaController === current) {
       quotaLoading = false
@@ -533,6 +539,8 @@ const statusOptions = computed(() =>
         :error="quotaError"
         :carbon-report="carbonQuotaReport"
         :carbon-error="carbonQuotaError"
+        :hydrogen-report="hydrogenQuotaReport"
+        :hydrogen-error="hydrogenQuotaError"
       />
       <template v-if="status === 'loading'">
         <div
@@ -569,6 +577,8 @@ const statusOptions = computed(() =>
             :error="quotaError"
             :carbon-report="carbonQuotaReport"
             :carbon-error="carbonQuotaError"
+            :hydrogen-report="hydrogenQuotaReport"
+            :hydrogen-error="hydrogenQuotaError"
           />
           <div
             v-if="report.totals.requests === 0"
@@ -612,6 +622,8 @@ const statusOptions = computed(() =>
               :error="quotaError"
               :carbon-report="carbonQuotaReport"
               :carbon-error="carbonQuotaError"
+              :hydrogen-report="hydrogenQuotaReport"
+              :hydrogen-error="hydrogenQuotaError"
             />
             <UsageCharts
               :report="report"

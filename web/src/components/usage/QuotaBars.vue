@@ -16,7 +16,7 @@ const props = withDefaults(
   defineProps<{
     report: QuotaEstimateReport | null
     error: string
-    modelLabel?: 'Argon' | 'Carbon'
+    modelLabel?: 'Argon' | 'Carbon' | 'Hydrogen'
   }>(),
   { modelLabel: 'Argon' },
 )
