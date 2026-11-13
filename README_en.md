@@ -27,10 +27,11 @@
 
 ## Core Capabilities
 
-- **Dual Quota Channels**: Every account has separate Playground and Build app proxy quotas, and `UPSTREAM_CHANNELS` enables either or both; when one channel hits its limit, the same account continues on the other
+- **Optional Upstream Channels**: Only Playground is enabled by default. Build and Assistant require explicit opt-in through `UPSTREAM_CHANNELS`. Bare-model auto routing uses enabled Playground/Build channels only; Assistant requires an explicit route
 - **High-Concurrency Multi-Account**: Detects Free, Pro, Ultra, and Plus benefits and routes across accounts by the live model catalog with round-robin or fill-first
 - **Two WAA Backends**: Camoufox holds the official WAA lifecycle by default; with `WAA_BACKEND=go`, pure Go generates the official proof and no browser is downloaded or launched at runtime
 - **Four API Protocols**: OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini GenerateContent; Responses supports context compaction through `/v1/responses/compact` and `compaction` and `compaction_trigger` input items
+- **Portable Tool History**: Explicit Playground/Build routes can convert unknown tool signatures into tool semantics without reusing the original signature. See [tool-signature recovery and its limits](docs/portable-tool-history.md)
 - **Mainstream Agent Clients**: Works with Claude Code, Codex, OpenCode, pi, omp, OpenClaw, and Hermes, including file read and write tool calls; native web search works in Claude Code, Codex, and omp
 
 ## Features
@@ -480,11 +481,13 @@ cp .env.example .env
 | `WARM_STARTUP_CONCURRENCY` | `5` | Camoufox workers cold-started concurrently, shared by prewarming and on-demand scaling; unlimited with `WAA_BACKEND=go` |
 | `PER_ACCOUNT_CONCURRENCY` | `2` | Concurrent requests allowed per account |
 | `ROUTING_STRATEGY` | `round-robin` | `round-robin` rotates accounts; `fill-first` reuses the first available account |
-| `UPSTREAM_CHANNELS` | `playground,build` | Upstream channels for generation requests; either one can be used alone |
+| `UPSTREAM_CHANNELS` | `playground` | Playground only by default; explicitly enable `build` or `assistant`; keep at least one channel |
 | `MODEL_MAPPING` | empty | Client model names mapped to catalog models, each item `alias:model ID`, comma separated |
-| `BUILD_NATIVE_NONSTREAM` | `true` | Prefer native Build unary calls for non-streaming requests; log any fallback to stream collection |
+| `BUILD_NATIVE_NONSTREAM` | `true` | Prefer native Build unary calls for bare-model requests only when Build is enabled; never enables a disabled channel |
 | `WAA_BACKEND` | `camoufox` | `camoufox` runs WAA in a Camoufox page; `go` runs WAA inside the service process and neither downloads nor starts Camoufox |
 | `TEMPORARY_CHAT` | `false` | Use Temporary Chat for the WAA prewarm page |
+
+Saved `UPSTREAM_CHANNELS` changes apply on the next generation-service start, not immediately, and do not cancel in-flight requests. The new default does not replace existing saved values; process environment variables still override the file. With Playground only, explicit `build/` and `assistant/` requests from every caller fail locally without rerouting. Auto routing and public catalogs exclude disabled channels; Build-only embedding, Live, and real-time music are unavailable. See [Build channel configuration](docs/build.md#配置与显示).
 
 The service loads every account from `AISTUDIO_AUTH_STATES`. `WARM_WORKER_LIMIT` sets the resident warm pool, `MAX_ACTIVE_WORKERS` caps peak worker count, `WARM_STARTUP_CONCURRENCY` controls how many Camoufox workers cold-start at once, and `PER_ACCOUNT_CONCURRENCY` controls request slots per account. Saving these four in the console applies them to scheduling right away: lowering the peak limit closes the extra idle workers, and raising the resident count prewarms more.
 

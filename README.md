@@ -27,10 +27,11 @@
 
 ## 核心能力
 
-- **双额度通道**: 每个账户同时拥有 Playground 与 Build 应用代理两份独立额度，`UPSTREAM_CHANNELS` 可单独或同时启用；一个通道触发限额后，同一账户由另一个通道继续
+- **可选上游通道**: 默认仅启用 Playground；Build 与 Assistant 可通过 `UPSTREAM_CHANNELS` 显式启用。裸名 auto 只在已启用的 Playground/Build 间调度，Assistant 只接受显式路由
 - **多账户高并发**: 识别 Free、Pro、Ultra 与 Plus 权益，按实时模型目录在账户间轮询或优先复用
 - **两种 WAA 后端**: 默认由 Camoufox 持有官方 WAA 生命周期；设置 `WAA_BACKEND=go` 后由纯 Go 生成官方 proof，运行时不下载、不启动浏览器
 - **四套 API 协议**: OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 Gemini GenerateContent；Responses 支持 `/v1/responses/compact` 与 `compaction`、`compaction_trigger` 输入项的上下文压缩
+- **可移植工具历史**: 显式 Playground/Build 的未知工具签名可转换为不携带原签名的工具语义，适用边界见 [工具签名恢复](docs/portable-tool-history.md)
 - **主流 agent 客户端**: 支持 Claude Code、Codex、OpenCode、pi、omp、OpenClaw、Hermes 的文件读写工具调用，Claude Code、Codex、omp 的原生联网搜索可直接使用
 
 ## 特性
@@ -481,11 +482,13 @@ cp .env.example .env
 | `WARM_STARTUP_CONCURRENCY` | `5` | 同时冷启动的 Camoufox Worker 数，预热与按需扩容共用；`WAA_BACKEND=go` 时不限制 |
 | `PER_ACCOUNT_CONCURRENCY` | `2` | 单账号同时执行的请求数 |
 | `ROUTING_STRATEGY` | `round-robin` | `round-robin` 轮询；`fill-first` 账号粘性优先 |
-| `UPSTREAM_CHANNELS` | `playground,build` | 生成请求使用的上游通道，可只保留其一 |
+| `UPSTREAM_CHANNELS` | `playground` | 默认仅 Playground；`build`、`assistant` 须显式启用，至少保留一个 |
 | `MODEL_MAPPING` | 空 | 客户端模型名到目录模型的映射，每项写成 `别名:模型 ID`，逗号分隔多项 |
-| `BUILD_NATIVE_NONSTREAM` | `true` | 非流式请求优先使用 Build 原生单次调用；不可用时回退流式并记录原因 |
+| `BUILD_NATIVE_NONSTREAM` | `true` | 已启用 Build 时，裸名非流式请求优先使用其原生单次调用；不会启用已关闭通道 |
 | `WAA_BACKEND` | `camoufox` | `camoufox` 在 Camoufox 页面运行 WAA；`go` 在服务进程内运行 WAA，不下载也不启动 Camoufox |
 | `TEMPORARY_CHAT` | `false` | WAA 预热页是否使用临时对话 |
+
+`UPSTREAM_CHANNELS` 保存后在下一次生成服务启动时生效，不是热关闭，也不会撤回在途请求。新默认不会覆盖旧保存值，进程环境变量仍优先于文件。仅 Playground 时，所有调用方的显式 `build/`、`assistant/` 请求本地拒绝、不改投其他通道；auto 与公开目录不包含关闭通道，Build-only embedding、Live 和实时音乐不可用。完整配置与显式启用方法见 [Build 通道](docs/build.md#配置与显示)。
 
 服务启动时会载入 `AISTUDIO_AUTH_STATES` 中的全部账户；`WARM_WORKER_LIMIT` 控制常驻预热规模，`MAX_ACTIVE_WORKERS` 控制峰值 Worker 上限，`WARM_STARTUP_CONCURRENCY` 控制同时冷启动的 Camoufox Worker 数，`PER_ACCOUNT_CONCURRENCY` 控制单账户请求槽位；这四项在管理页面保存后立即作用于后续调度，峰值上限调低时关闭多出的空闲 Worker，常驻数调高时补足预热。
 

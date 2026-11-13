@@ -227,13 +227,30 @@ func TestThreeProtocolRealToolLoopAndHistoryIsolation(t *testing.T) {
 	}
 }
 
-func TestNativeSignatureUnknownOriginRejectedBeforeGeneration(t *testing.T) {
-	service := &fakeService{models: []aistudio.Model{routingTestModel()}}
-	handler := newRoutingTestHandler(t, service)
-	body := `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"real","args":{}},"thoughtSignature":"external-unknown-fixture"}]},{"role":"user","parts":[{"text":"continue"}]}]}`
-	response := doJSON(t, handler, "POST", "/v1beta/models/build/gemini-4-argon:generateContent", body)
-	if response.Code != 400 || service.generateCount() != 0 {
-		t.Fatal(response.Code, response.Body.String())
+func TestNativeSignatureUnknownOriginToolBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name, part          string
+		wantCode, wantCalls int
+	}{
+		{"tool", `{"functionCall":{"name":"real","args":{}},"thoughtSignature":"external-unknown-fixture"}`, 200, 1},
+		{"text", `{"text":"keep","thoughtSignature":"external-unknown-fixture"}`, 400, 0},
+		{"signature_only", `{"thoughtSignature":"external-unknown-fixture"}`, 400, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &fakeService{models: []aistudio.Model{routingTestModel()}, generateEvents: toolLoopEvents(aistudio.ChannelBuild, true)}
+			handler := newRoutingTestHandler(t, service)
+			body := fmt.Sprintf(`{"contents":[{"role":"model","parts":[%s]},{"role":"user","parts":[{"text":"continue"}]}]}`, tc.part)
+			response := doJSON(t, handler, "POST", "/v1beta/models/build/gemini-4-argon:generateContent", body)
+			if response.Code != tc.wantCode || service.generateCount() != tc.wantCalls {
+				t.Fatal(response.Code, response.Body.String())
+			}
+			if tc.wantCalls != 0 {
+				part := service.lastGenerate(t).Contents[0].Parts[0]
+				if part.ThoughtSignature != "" || part.FunctionCall == nil || part.FunctionCall.Name != "real" || part.FunctionCall.ThoughtSignature != "" {
+					t.Fatal("native unknown tool was not preserved as portable history")
+				}
+			}
+		})
 	}
 }
 

@@ -53,7 +53,7 @@ const form = reactive<ServiceConfig>({
   warm_startup_concurrency: 5,
   per_account_concurrency: 2,
   routing_strategy: 'round-robin',
-  upstream_channels: ['playground', 'build'],
+  upstream_channels: ['playground'],
   model_mapping: '',
   waa_backend: 'camoufox',
   temporary_chat: false,

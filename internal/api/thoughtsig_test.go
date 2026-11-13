@@ -293,7 +293,7 @@ func TestThoughtSignatureRestoreCheckedProvenance(t *testing.T) {
 		{"strict_to_auto", "model", "", "lookup", "{\"a\":1}", "", "", "", true},
 		{"explicit_wins", "model", "build", "lookup", "{\"a\":1}", "explicit", "", "explicit", false},
 		{"conflict", "model", "build", "lookup", "{\"a\":1}", "explicit", "stored", "explicit", true},
-		{"unknown", "model", "build", "lookup", "{\"a\":1}", "unknown", "", "unknown", true},
+		{"unknown_restores_cache", "model", "build", "lookup", "{\"a\":1}", "unknown", "", "stored", false},
 		{"different_arguments", "model", "playground", "lookup", "{\"a\":2}", "", "", "", false},
 		{"different_function", "model", "playground", "other", "{\"a\":1}", "", "", "", false},
 	} {
@@ -328,9 +328,9 @@ func TestThoughtSignatureRestoreCheckedSkipValidator(t *testing.T) {
 		{"strict_to_auto", "cached", "model", "", skip, skip, "", "", "strict-origin tool history cannot become auto"},
 		{"real_call", "foreign", "model", "playground", "stored", skip, "stored", "", ""},
 		{"real_part", "foreign", "model", "playground", skip, "stored", "", "stored", ""},
-		{"unknown_call", "foreign", "model", "playground", "unknown", skip, "unknown", "", "unknown or incompatible provenance"},
-		{"unknown_part", "foreign", "model", "playground", skip, "unknown", "", "unknown", "unknown or incompatible provenance"},
-		{"not_exact", "foreign", "model", "playground", skip + " ", "", skip + " ", "", "unknown or incompatible provenance"},
+		{"unknown_call", "foreign", "model", "playground", "unknown", skip, "", "", ""},
+		{"unknown_part", "foreign", "model", "playground", skip, "unknown", "", "", ""},
+		{"not_exact_is_unknown", "foreign", "model", "playground", skip + " ", "", "", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := aistudio.FunctionCall{ID: tc.id, Name: "lookup", Arguments: json.RawMessage("{}"), ThoughtSignature: tc.callSignature}

@@ -112,7 +112,7 @@ func Default() Config {
 		WarmStartupConcurrency:     defaultWarmConcurrency,
 		PerAccountConcurrency:      defaultAccountConcurrency,
 		RoutingStrategy:            "round-robin",
-		UpstreamChannels:           []string{"playground", "build"},
+		UpstreamChannels:           []string{"playground"},
 		WAABackend:                 WAABackendCamoufox,
 	}
 }

@@ -6,7 +6,7 @@ import (
 )
 
 func TestAssistantChannelIsOptInAndReserved(t *testing.T) {
-	if got := Default().UpstreamChannels; !reflect.DeepEqual(got, []string{"playground", "build"}) {
+	if got := Default().UpstreamChannels; !reflect.DeepEqual(got, []string{"playground"}) {
 		t.Fatalf("default enabled new upstream path: %v", got)
 	}
 	for _, channels := range [][]string{{"assistant"}, {"playground", "build", "assistant"}} {

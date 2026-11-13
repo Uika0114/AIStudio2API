@@ -192,15 +192,16 @@ func opaqueHistoryError(reason string) error {
 	return fmt.Errorf("%w: cannot safely reuse upstream thought signature: %s; use its matching explicit model/channel or portable history", aistudio.ErrInvalidArgument, reason)
 }
 
-// RestoreChecked validates explicit native signatures as well as omitted OpenAI
-// signatures. A missing cache hit is not permission to discard known opaque state.
-// Bare-to-bare legacy histories retain their old behavior; known strict-origin
-// state cannot be sent through unpinned auto.
+// RestoreChecked validates opaque history and restores matching cached signatures.
+// Unknown PG/Build tool signatures become portable calls, without changing
+// known conflicts, non-tool state or Assistant. Bare-to-bare legacy histories
+// retain their old behavior; known strict-origin state cannot become auto.
 func (store *thoughtSignatureStore) RestoreChecked(contents []aistudio.Content, selection aistudio.ModelSelection) error {
 	const skip = "skip_thought_signature_validator"
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	base, channel := strings.TrimSpace(selection.BaseModel), string(selection.Channel)
+	portableTools := selection.Channel == aistudio.ChannelPlayground || selection.Channel == aistudio.ChannelBuild
 	for _, content := range contents {
 		for i := range content.Parts {
 			part := &content.Parts[i]
@@ -222,6 +223,13 @@ func (store *thoughtSignatureStore) RestoreChecked(contents []aistudio.Content, 
 				}
 				signature = call.ThoughtSignature
 			}
+			// Unknown input signatures are not reused directly. Drop only that
+			// opaque value; the existing routed cache still gets first chance below.
+			if portableTools && call != nil && signature != "" &&
+				len(store.origins[sha256.Sum256([]byte(signature))]) == 0 {
+				part.ThoughtSignature, call.ThoughtSignature, signature = "", "", ""
+			}
+			restoredFromRoute := false
 			if call != nil && call.ID != "" {
 				key := thoughtSignatureKey(*call)
 				if !selection.Strict() && store.strictCallOriginLocked(key) {
@@ -230,6 +238,7 @@ func (store *thoughtSignatureStore) RestoreChecked(contents []aistudio.Content, 
 				if signature == "" {
 					if selection.Strict() {
 						signature = store.routed[routedThoughtSignatureKey(base, channel, key)]
+						restoredFromRoute = portableTools && signature != ""
 						if signature == "" && store.knownCallOriginLocked(key) {
 							return opaqueHistoryError("tool call belongs to another model/channel")
 						}
@@ -247,7 +256,9 @@ func (store *thoughtSignatureStore) RestoreChecked(contents []aistudio.Content, 
 			origins := store.origins[sha256.Sum256([]byte(signature))]
 			if selection.Strict() {
 				match := slices.ContainsFunc(origins, func(origin thoughtSignatureOrigin) bool { return origin.base == base && origin.channel == channel })
-				if !match {
+				// The routed key retains exact call/model/channel provenance even
+				// if its separate origin entry was evicted. Known mismatches still fail.
+				if !match && !(restoredFromRoute && len(origins) == 0) {
 					return opaqueHistoryError("unknown or incompatible provenance")
 				}
 			} else if slices.ContainsFunc(origins, func(origin thoughtSignatureOrigin) bool { return origin.strict }) {

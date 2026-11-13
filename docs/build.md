@@ -25,12 +25,16 @@ Build 应用运行在 `*.scf.usercontent.goog` 的 blob 沙箱 iframe 中。宿�
 | --- | --- |
 | `playground` | 官网 Playground 的 `GenerateContent` |
 | `build` | Build 应用代理的 Gemini API 调用 |
+| `assistant` | Build 代码助手，仅接受显式 `assistant/` 路由，不参与裸名 auto |
 
-- 默认值为 `playground,build`；逗号分隔，去除空白并转小写；至少一个，不能重复，其他值在配置校验时报错
-- 列表顺序即同一账户内的通道顺序
-- 配置来源为 `.env`、管理页面设置中的“上游通道”（至少保留一个，保存为 `playground,build` 顺序）或 `PUT /api/config` 的 `upstream_channels`；保存值在下一次启动生成服务时生效
+- 默认值为 `playground`；Build 与 Assistant 须显式启用。可配置 `playground,build,assistant` 保留三通道能力；逗号分隔，去除空白并转小写；至少一个，不能重复，其他值在配置校验时报错
+- 列表顺序即同一账户内的 auto 通道顺序，Assistant 不参与 auto
+- 配置来源为 `.env`、管理页面设置中的“上游通道”或完整 `PUT /api/config` 的 `upstream_channels`；进程环境变量优先于文件。旧保存值和环境覆盖不会因默认值收紧而自动改变
+- 保存不是热关闭：新列表在下一次生成服务启动时生效，在途请求不会因此撤回。管理页面保留三个选项及至少一个通道校验；`PUT /api/config` 不是单字段 PATCH，不可只提交通道列表覆盖其他配置
 
-`BUILD_NATIVE_NONSTREAM=true` 为默认值：Gemini、Chat、Responses、Anthropic、Interactions、图片和语音端点的非流式请求在每个账户上优先使用 Build 通道，执行 `ProxyUnaryCall` 与 `:generateContent`。Build 通道未启用、该账户的 Build 目录不支持模型或该账户的 Build 额度冷却时，由同一账户的其余可用通道执行；文件引用与专用能力按其 Playground 路由执行。关闭该选项后按原通道顺序调度，选中 Build 的非流式请求仍执行单次调用。
+仅启用 Playground 时，所有调用方的显式 `build/`、`assistant/` 请求均在本地拒绝，不改投 Playground；裸名 auto 也不选择关闭通道，公开目录裁剪其变体及 Build 独有模型。Build-only embedding、Live 与实时音乐因此不可用，原 Playground 能力保留。
+
+`BUILD_NATIVE_NONSTREAM=true` 为默认值，但不会启用已关闭的 Build。Build 已显式启用时，Gemini、Chat、Responses、Anthropic、Interactions、图片和语音端点的裸名非流式请求在每个账户上优先使用 Build 通道，执行 `ProxyUnaryCall` 与 `:generateContent`。Build 通道未启用、该账户的 Build 目录不支持模型或该账户的 Build 额度冷却时，裸名 auto 由同一账户的其余已启用可用通道执行；显式通道请求不跨通道回退。文件引用与专用能力按其 Playground 路由执行。关闭该选项后按原通道顺序调度，选中 Build 的非流式请求仍执行单次调用。
 
 Playground `GenerateContent` 的响应为 repeated 流帧，完整收集后转换为公开非流式响应。日志的“上游调用”记录实际通道、`native` / `stream` 模式和 RPC；非流式请求使用流式传输时，以 WARN 记录“回退流式”与原因。Build 明确返回单次方法不支持时，尝试该通道的 `ProxyStreamedCall`；参数错误按“错误、额度与能力边界”一节处理。
 
