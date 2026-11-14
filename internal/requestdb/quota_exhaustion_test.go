@@ -249,10 +249,10 @@ func TestQuotaExhaustionResetPreservesCapsWithoutCrossModelPollution(t *testing.
 	quotaValue(t, argon.Requests.Remaining, 0)
 	quotaValue(t, argon.Tokens.Remaining, 20000000)
 	hydrogen := hydrogenRead(t, store, quotaMembers(), now)
-	if hydrogen.Accounts[0].Exhausted429 {
+	if quotaAccount(t, hydrogen, "b").Exhausted429 {
 		t.Fatal("other models exhausted Hydrogen")
 	}
-	quotaValue(t, hydrogen.Tokens.Limit, 20000000)
+	quotaValue(t, hydrogen.Tokens.Limit, 35000000)
 
 	if err := store.Close(); err != nil {
 		t.Fatal(err)

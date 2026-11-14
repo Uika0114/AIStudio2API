@@ -42,7 +42,7 @@ func TestQuotaObservedLimitsIsolateModelTierAccountAndDimension(t *testing.T) {
 	quotaValue(t, quotaAccount(t, report, "a").Tokens.Limit, 15000000)
 	quotaValue(t, report.Tokens.Limit, 53000000)
 	quotaValue(t, carbonRead(t, store, quotaMembers(), now).Tokens.Limit, 20000000)
-	quotaValue(t, hydrogenRead(t, store, quotaMembers(), now).Tokens.Limit, 20000000)
+	quotaValue(t, hydrogenRead(t, store, quotaMembers(), now).Tokens.Limit, 35000000)
 
 	// A later request-count observation changes only that field.
 	store.RecordQuotaAttempt(observedLimitSend("requests", "b", argonQuota.model, "ultra", now.Add(time.Second), quotaInt(137), nil))
@@ -135,4 +135,43 @@ func TestQuotaObservedLimitsIgnoreUnknownEvidenceAndCopyNumericValues(t *testing
 	if err := store.quotaConn.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM quota_observed_limits").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("unexpected observations: count=%d error=%v", count, err)
 	}
+}
+
+func TestHydrogenQuotaProObservedLimitsIsolateModelTierAccountAndDimension(t *testing.T) {
+	store, _, now := hydrogenQuotaFixture(t)
+	members := append(quotaMembers(), api.QuotaMember{ID: "c", Tier: "Pro", Enabled: true})
+	store.RecordQuotaAttempt(observedLimitSend("token", "a", hydrogenQuota.model, "pro", now, nil, quotaInt(12000000)))
+	report := hydrogenRead(t, store, members, now)
+	pro := quotaAccount(t, report, "a")
+	quotaValue(t, pro.Tokens.Limit, 12000000)
+	quotaValue(t, pro.Tokens.Remaining, 0)
+	quotaValue(t, pro.Requests.Limit, 50)
+	quotaValue(t, pro.Requests.Remaining, 49)
+	quotaValue(t, quotaAccount(t, report, "b").Tokens.Limit, 20000000)
+	quotaValue(t, quotaAccount(t, report, "c").Tokens.Limit, 15000000)
+	quotaValue(t, quotaAccount(t, quotaRead(t, store, members, now), "a").Tokens.Limit, 15000000)
+	carbon := carbonRead(t, store, members, now)
+	if len(carbon.Accounts) != 1 || carbon.ExcludedAccounts != 2 {
+		t.Fatalf("Hydrogen Pro observation enlarged Carbon supply: %+v", carbon)
+	}
+
+	store.RecordQuotaAttempt(observedLimitSend("requests", "a", hydrogenQuota.model, "pro", now.Add(time.Second), quotaInt(43), nil))
+	pro = quotaAccount(t, hydrogenRead(t, store, members, now), "a")
+	quotaValue(t, pro.Tokens.Limit, 12000000)
+	quotaValue(t, pro.Requests.Limit, 43)
+	quotaValue(t, pro.Requests.Remaining, 0)
+
+	members[0].Tier = "Ultra"
+	ultra := quotaAccount(t, hydrogenRead(t, store, members, now), "a")
+	quotaValue(t, ultra.Tokens.Limit, 20000000)
+	quotaValue(t, ultra.Requests.Limit, 150)
+	if ultra.Exhausted429 {
+		t.Fatal("Hydrogen Pro exhaustion leaked into Ultra")
+	}
+	store.RecordQuotaAttempt(observedLimitSend("ultra-token", "a", hydrogenQuota.model, "ultra", now.Add(2*time.Second), nil, quotaInt(18000000)))
+	quotaValue(t, quotaAccount(t, hydrogenRead(t, store, members, now), "a").Tokens.Limit, 18000000)
+	members[0].Tier = "Pro"
+	pro = quotaAccount(t, hydrogenRead(t, store, members, now), "a")
+	quotaValue(t, pro.Tokens.Limit, 12000000)
+	quotaValue(t, pro.Requests.Limit, 43)
 }

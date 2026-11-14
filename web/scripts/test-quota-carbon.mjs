@@ -80,7 +80,7 @@ test('six real component bars put each model after the icon and before the metri
   assert.match(text(poolHTML(html, 'Hydrogen')), /HydrogenToken2400万.*Hydrogen请求数150/)
 })
 
-test('no enabled Ultra pool hides Carbon and Hydrogen without hiding Argon', async () => {
+test('absent model pools hide Carbon and Hydrogen without hiding Argon', async () => {
   for (const empty of [true, false]) {
     const html = await render({
       carbonReport: empty ? null : report('gemini-4-carbon', []),
@@ -89,6 +89,20 @@ test('no enabled Ultra pool hides Carbon and Hydrogen without hiding Argon', asy
     assert.equal([...html.matchAll(/data-quota="/g)].length, 2)
     assert.doesNotMatch(html, /data-quota-model="(?:Carbon|Hydrogen)"/)
   }
+})
+
+test('a Pro-only Hydrogen pool remains visible while Carbon is absent', async () => {
+  const value = report('gemini-4-hydrogen', ['fixture-pro'])
+  value.tokens = balance(15000000, 1000000)
+  value.requests = balance(50, 10)
+  Object.assign(value.accounts[0], { tier: 'Pro', tokens: value.tokens, requests: value.requests })
+  const html = await render({
+    carbonReport: report('gemini-4-carbon', []),
+    hydrogenReport: value,
+  })
+  assert.equal([...html.matchAll(/data-quota="/g)].length, 4)
+  assert.doesNotMatch(html, /data-quota-model="Carbon"/)
+  assert.match(text(poolHTML(html, 'Hydrogen')), /HydrogenToken1400万.*Hydrogen请求数40/)
 })
 
 for (const [label, key] of [

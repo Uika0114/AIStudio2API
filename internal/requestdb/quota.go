@@ -338,8 +338,9 @@ func (store *Store) QuotaSnapshotForModel(ctx context.Context, members []api.Quo
 			continue
 		}
 		seen[member.ID] = true
-		// Carbon and Hydrogen use the user-approved Ultra-only estimate, not a verified upstream pool.
-		if (scope == carbonQuota || scope == hydrogenQuota) && !strings.EqualFold(member.Tier, "ultra") {
+		// Carbon estimates are Ultra-only; Hydrogen also includes Pro, but no other tiers.
+		if (scope == carbonQuota || scope == hydrogenQuota) && !strings.EqualFold(member.Tier, "ultra") &&
+			!(scope == hydrogenQuota && strings.EqualFold(member.Tier, "pro")) {
 			report.ExcludedAccounts++
 			continue
 		}

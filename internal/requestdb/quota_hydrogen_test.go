@@ -50,20 +50,24 @@ func TestHydrogenQuotaSeparateModelTablesAndLegacyArgonRead(t *testing.T) {
 	older.Revision--
 	older.Usage = &aistudio.Usage{TotalTokens: 999999}
 	store.RecordQuotaAttempt(older)
-	store.RecordQuotaAttempt(hydrogenSend("pro-not-supply", "a", now, 5678))
+	store.RecordQuotaAttempt(hydrogenSend("pro-supply", "a", now, 5678))
 	argon := quotaRead(t, store, quotaMembers(), now)
 	quotaValue(t, argon.Tokens.Used, 1200)
 	quotaValue(t, argon.Requests.Used, 1)
 	quotaValue(t, carbonRead(t, store, quotaMembers(), now).Tokens.Used, 2300)
 	report := hydrogenRead(t, store, quotaMembers(), now)
-	quotaValue(t, report.Tokens.Limit, 20000000)
-	quotaValue(t, report.Tokens.Used, 3400)
-	quotaValue(t, report.Tokens.Remaining, 20000000-3400)
-	quotaValue(t, report.Requests.Limit, 150)
-	quotaValue(t, report.Requests.Used, 1)
-	if len(report.Accounts) != 1 || report.Accounts[0].ID != "b" || report.ExcludedAccounts != 1 {
-		t.Fatalf("Hydrogen included non-Ultra: %+v", report)
+	quotaValue(t, report.Tokens.Limit, 35000000)
+	quotaValue(t, report.Tokens.Used, 9078)
+	quotaValue(t, report.Tokens.Remaining, 35000000-9078)
+	quotaValue(t, report.Requests.Limit, 200)
+	quotaValue(t, report.Requests.Used, 2)
+	if len(report.Accounts) != 2 || report.ExcludedAccounts != 0 {
+		t.Fatalf("Hydrogen omitted an enabled Pro or Ultra: %+v", report)
 	}
+	pro := quotaAccount(t, report, "a")
+	quotaValue(t, pro.Tokens.Limit, 15000000)
+	quotaValue(t, pro.Tokens.Used, 5678)
+	quotaValue(t, pro.Requests.Limit, 50)
 	// This is exactly the legacy reader's table, with no new model filter needed.
 	var count, tokens int64
 	if err := store.quotaConn.QueryRowContext(context.Background(), `SELECT COUNT(*),SUM(tokens) FROM quota17_argon_attempts`).Scan(&count, &tokens); err != nil || count != 1 || tokens != 1200 {
@@ -77,31 +81,52 @@ func TestHydrogenQuotaSeparateModelTablesAndLegacyArgonRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	quotaValue(t, hydrogenRead(t, reopened, quotaMembers(), now).Tokens.Used, 3400)
+	quotaValue(t, hydrogenRead(t, reopened, quotaMembers(), now).Tokens.Used, 9078)
 	quotaValue(t, quotaRead(t, reopened, quotaMembers(), now).Tokens.Used, 1200)
 	quotaValue(t, carbonRead(t, reopened, quotaMembers(), now).Tokens.Used, 2300)
 	reopened.RecordQuotaAttempt(hydrogenSend("same-id", "b", now, 50))
-	quotaValue(t, hydrogenRead(t, reopened, quotaMembers(), now).Requests.Used, 2)
+	quotaValue(t, hydrogenRead(t, reopened, quotaMembers(), now).Requests.Used, 3)
 }
 
-func TestHydrogenQuotaUltraOnlyMembershipAndDisableRestore(t *testing.T) {
+func TestHydrogenQuotaProUltraMembershipAndDisableRestore(t *testing.T) {
 	store, _, now := hydrogenQuotaFixture(t)
-	store.RecordQuotaAttempt(hydrogenSend("used", "b", now, 800))
-	members := append(quotaMembers(), api.QuotaMember{ID: "b", Tier: "Ultra", Enabled: true}, api.QuotaMember{ID: "off", Tier: "Ultra"}, api.QuotaMember{ID: "unknown", Tier: "Plus", Enabled: true})
+	store.RecordQuotaAttempt(hydrogenSend("ultra", "b", now, 800))
+	store.RecordQuotaAttempt(hydrogenSend("pro", "a", now, 200))
+	members := append(quotaMembers(),
+		api.QuotaMember{ID: "b", Tier: "Ultra", Enabled: true},
+		api.QuotaMember{ID: "off", Tier: "Ultra"},
+		api.QuotaMember{ID: "unknown", Tier: "Plus", Enabled: true},
+		api.QuotaMember{ID: "free", Tier: "Free", Enabled: true},
+	)
 	report := hydrogenRead(t, store, members, now)
-	quotaValue(t, report.Requests.Limit, 150)
-	quotaValue(t, report.Requests.Used, 1)
-	if len(report.Accounts) != 1 {
-		t.Fatal("duplicate, disabled or unknown account enlarged Hydrogen supply")
+	quotaValue(t, report.Requests.Limit, 200)
+	quotaValue(t, report.Requests.Used, 2)
+	if len(report.Accounts) != 2 || report.ExcludedAccounts != 2 {
+		t.Fatal("duplicate, disabled, unknown or free account enlarged Hydrogen supply")
 	}
 	members[1].Enabled = false
 	members[2].Enabled = false
+	proOnly := hydrogenRead(t, store, members, now)
+	quotaValue(t, proOnly.Tokens.Limit, 15000000)
+	quotaValue(t, proOnly.Tokens.Used, 200)
+	quotaValue(t, proOnly.Tokens.Remaining, 15000000-200)
+	quotaValue(t, proOnly.Requests.Limit, 50)
+	quotaValue(t, proOnly.Requests.Remaining, 49)
+	if !quotaAccount(t, proOnly, "a").Included {
+		t.Fatal("Pro-only Hydrogen pool was excluded")
+	}
+	carbon := carbonRead(t, store, members, now)
+	if len(carbon.Accounts) != 0 || carbon.Tokens.Limit != nil {
+		t.Fatalf("Pro-only pool enlarged Carbon supply: %+v", carbon)
+	}
+	members[0].Enabled = false
 	empty := hydrogenRead(t, store, members, now)
 	if len(empty.Accounts) != 0 || empty.Tokens.Limit != nil || empty.Requests.Remaining != nil {
-		t.Fatalf("no-Ultra pool is not empty: %+v", empty)
+		t.Fatalf("disabled or unsupported members enlarged Hydrogen supply: %+v", empty)
 	}
+	members[0].Enabled = true
 	members[1].Enabled = true
-	quotaValue(t, hydrogenRead(t, store, members, now).Tokens.Used, 800)
+	quotaValue(t, hydrogenRead(t, store, members, now).Tokens.Used, 1000)
 }
 
 func TestHydrogenQuota429AndLateUsageStayInOwnModelAndWindow(t *testing.T) {
@@ -118,7 +143,7 @@ func TestHydrogenQuota429AndLateUsageStayInOwnModelAndWindow(t *testing.T) {
 	quotaValue(t, report.Requests.Used, 2)
 	quotaUnknown(t, report.Requests.Remaining)
 	quotaUnknown(t, report.Tokens.Remaining)
-	if !report.Accounts[0].Exhausted429 || report.Unreported != 1 {
+	if !quotaAccount(t, report, "b").Exhausted429 || report.Unreported != 1 {
 		t.Fatal("Hydrogen 429/missing-usage metadata missing")
 	}
 	quotaValue(t, quotaRead(t, store, quotaMembers(), now).Requests.Remaining, 199)
@@ -130,8 +155,8 @@ func TestHydrogenQuota429AndLateUsageStayInOwnModelAndWindow(t *testing.T) {
 	quotaUnknown(t, hydrogenRead(t, store, quotaMembers(), now).Tokens.Remaining)
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	fresh := hydrogenRead(t, store, quotaMembers(), next)
-	quotaValue(t, fresh.Tokens.Remaining, 20000000)
-	quotaValue(t, fresh.Requests.Remaining, 150)
+	quotaValue(t, fresh.Tokens.Remaining, 35000000)
+	quotaValue(t, fresh.Requests.Remaining, 200)
 	limited.Revision++
 	limited.Usage = &aistudio.Usage{TotalTokens: 100}
 	limited.UsageSource = "upstream"
@@ -142,7 +167,7 @@ func TestHydrogenQuota429AndLateUsageStayInOwnModelAndWindow(t *testing.T) {
 	argon429 := quotaSend("argon429", "b", next, -1)
 	argon429.StatusCode = 429
 	store.RecordQuotaAttempt(argon429)
-	quotaValue(t, hydrogenRead(t, store, quotaMembers(), next).Tokens.Remaining, 20000000)
+	quotaValue(t, hydrogenRead(t, store, quotaMembers(), next).Tokens.Remaining, 35000000)
 }
 
 func TestHydrogenQuotaPartialScopeAndMissingUsage(t *testing.T) {
