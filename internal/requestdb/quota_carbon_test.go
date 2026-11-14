@@ -57,7 +57,7 @@ func TestCarbonQuotaSeparateModelTablesAndLegacyArgonRead(t *testing.T) {
 	quotaValue(t, report.Tokens.Limit, 20000000)
 	quotaValue(t, report.Tokens.Used, 3400)
 	quotaValue(t, report.Tokens.Remaining, 20000000-3400)
-	quotaValue(t, report.Requests.Limit, 200)
+	quotaValue(t, report.Requests.Limit, 150)
 	quotaValue(t, report.Requests.Used, 1)
 	if len(report.Accounts) != 1 || report.Accounts[0].ID != "b" || report.ExcludedAccounts != 1 {
 		t.Fatalf("Carbon included non-Ultra: %+v", report)
@@ -86,7 +86,7 @@ func TestCarbonQuotaUltraOnlyMembershipAndDisableRestore(t *testing.T) {
 	store.RecordQuotaAttempt(carbonSend("used", "b", now, 800))
 	members := append(quotaMembers(), api.QuotaMember{ID: "b", Tier: "Ultra", Enabled: true}, api.QuotaMember{ID: "off", Tier: "Ultra"}, api.QuotaMember{ID: "unknown", Tier: "Plus", Enabled: true})
 	report := carbonRead(t, store, members, now)
-	quotaValue(t, report.Requests.Limit, 200)
+	quotaValue(t, report.Requests.Limit, 150)
 	quotaValue(t, report.Requests.Used, 1)
 	if len(report.Accounts) != 1 {
 		t.Fatal("duplicate, disabled or unknown account enlarged Carbon supply")
@@ -117,13 +117,13 @@ func TestCarbonQuota429AndLateUsageStayInOwnModelAndWindow(t *testing.T) {
 	if !report.Accounts[0].Exhausted429 || report.Unreported != 1 {
 		t.Fatal("Carbon 429/missing-usage metadata missing")
 	}
-	quotaValue(t, quotaRead(t, store, quotaMembers(), now).Requests.Remaining, 249)
+	quotaValue(t, quotaRead(t, store, quotaMembers(), now).Requests.Remaining, 199)
 	store.RecordQuotaAttempt(carbonSend("after-minute-cooldown", "b", now, 10))
 	quotaUnknown(t, carbonRead(t, store, quotaMembers(), now).Tokens.Remaining)
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	fresh := carbonRead(t, store, quotaMembers(), next)
 	quotaValue(t, fresh.Tokens.Remaining, 20000000)
-	quotaValue(t, fresh.Requests.Remaining, 200)
+	quotaValue(t, fresh.Requests.Remaining, 150)
 	limited.Revision++
 	limited.Usage = &aistudio.Usage{TotalTokens: 100}
 	limited.UsageSource = "upstream"

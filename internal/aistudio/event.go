@@ -218,6 +218,8 @@ func decodeFinishReason(code int64) string {
 		return "image_recitation"
 	case 18:
 		return "missing_thought_signature"
+	case 19:
+		return "malformed_response"
 	default:
 		return fmt.Sprintf("provider_%d", code)
 	}

@@ -51,7 +51,7 @@ func dailyQuotaTier(header http.Header) string {
 // Deliberately recognize only the two upstream message formats confirmed in
 // production. In particular, do not infer daily limits from quota metadata,
 // minute/global quotas, or a description without its matching metric.
-var dailyQuotaLine = regexp.MustCompile(`^(?:\* )?Quota exceeded for metric: generativelanguage\.googleapis\.com/generate_(content_tokens|requests)_per_model_per_user, limit: ([0-9]+), model: ([^,\s]+), description: Generate content (tokens|requests) per user per day limit exceeded\.$`)
+var dailyQuotaLine = regexp.MustCompile(`^(?:\* )?Quota exceeded for metric: generativelanguage\.googleapis\.com/generate_(content_tokens|requests)_per_model_per_user, limit: ([0-9]+), model: ([^,\s]+), description: Generate content (tokens|requests) per user per day limit exceeded\.(?: See https://aistudio\.google\.com/docs/rate-limits\.)?$`)
 
 func parseDailyQuotaLimits(message, baseModel string) *DailyQuotaLimits {
 	baseModel = strings.TrimPrefix(strings.TrimSpace(baseModel), "models/")

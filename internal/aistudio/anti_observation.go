@@ -259,7 +259,7 @@ func antiObservedFinishReason(value string) string {
 		}
 		return value
 	}
-	for code := int64(0); code < 19; code++ {
+	for code := int64(0); code <= 19; code++ {
 		if decodeFinishReason(code) == value {
 			return value
 		}

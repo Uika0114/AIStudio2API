@@ -42,7 +42,7 @@ func TestQuotaExhaustionDimensionsIndependent(t *testing.T) {
 		reqRemain int64
 		tokRemain int64
 	}{
-		{"tokens only", nil, quotaInt(18000000), 2, 198, 0},
+		{"tokens only", nil, quotaInt(18000000), 2, 148, 0},
 		{"requests only", quotaInt(150), nil, 4, 0, 20000000 - 100},
 		{"both", quotaInt(150), quotaInt(18000000), 6, 0, 0},
 	} {
@@ -81,7 +81,7 @@ func TestQuotaExhaustionEarlyHTTPUnknownRefinedByLaterRevision(t *testing.T) {
 	attempt.QuotaLimits = &aistudio.DailyQuotaLimits{Tokens: quotaInt(18000000), ObservedAt: now}
 	store.RecordQuotaAttempt(attempt)
 	refined := quotaRead(t, store, members, now)
-	quotaValue(t, refined.Requests.Remaining, 199)
+	quotaValue(t, refined.Requests.Remaining, 149)
 	quotaValue(t, refined.Tokens.Remaining, 0)
 	quotaValue(t, refined.Requests.Used, 1)
 	quotaStoredExhaustion(t, store, attempt.ID, 2)
@@ -94,7 +94,7 @@ func TestQuotaExhaustionEarlyHTTPUnknownRefinedByLaterRevision(t *testing.T) {
 	attempt.UsageSource = "upstream"
 	store.RecordQuotaAttempt(attempt)
 	late := quotaRead(t, store, members, now)
-	quotaValue(t, late.Requests.Remaining, 199)
+	quotaValue(t, late.Requests.Remaining, 149)
 	quotaValue(t, late.Tokens.Remaining, 0)
 	quotaValue(t, late.Tokens.Used, 321)
 	quotaStoredExhaustion(t, store, attempt.ID, 2)
@@ -103,7 +103,7 @@ func TestQuotaExhaustionEarlyHTTPUnknownRefinedByLaterRevision(t *testing.T) {
 	attempt.StatusCode = 429
 	store.RecordQuotaAttempt(attempt)
 	quotaStoredExhaustion(t, store, attempt.ID, 2)
-	quotaValue(t, quotaRead(t, store, members, now).Requests.Remaining, 199)
+	quotaValue(t, quotaRead(t, store, members, now).Requests.Remaining, 149)
 
 	// The other explicit dimension may arrive in a still later snapshot.
 	attempt.Revision++
@@ -202,7 +202,7 @@ func TestQuotaExhaustionAggregatesEachDimensionSeparately(t *testing.T) {
 				want := int64(0)
 				if requests {
 					if !exhaustSecond {
-						want = 199
+						want = 149
 					}
 					quotaValue(t, report.Requests.Remaining, want)
 					quotaUnknown(t, report.Tokens.Remaining)
@@ -244,7 +244,7 @@ func TestQuotaExhaustionResetPreservesCapsWithoutCrossModelPollution(t *testing.
 	store.RecordQuotaAttempt(observedLimitSend("argon-request", "b", argonQuota.model, "ultra", now, quotaInt(150), nil))
 	carbon := carbonRead(t, store, quotaMembers(), now)
 	quotaValue(t, carbon.Tokens.Remaining, 0)
-	quotaValue(t, carbon.Requests.Remaining, 199)
+	quotaValue(t, carbon.Requests.Remaining, 149)
 	argon := quotaRead(t, store, quotaMembers()[1:], now)
 	quotaValue(t, argon.Requests.Remaining, 0)
 	quotaValue(t, argon.Tokens.Remaining, 20000000)
@@ -252,7 +252,7 @@ func TestQuotaExhaustionResetPreservesCapsWithoutCrossModelPollution(t *testing.
 	if hydrogen.Accounts[0].Exhausted429 {
 		t.Fatal("other models exhausted Hydrogen")
 	}
-	quotaValue(t, hydrogen.Tokens.Limit, 30000000)
+	quotaValue(t, hydrogen.Tokens.Limit, 20000000)
 
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -265,7 +265,7 @@ func TestQuotaExhaustionResetPreservesCapsWithoutCrossModelPollution(t *testing.
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	carbon = carbonRead(t, reopened, quotaMembers(), next)
 	quotaValue(t, carbon.Tokens.Remaining, 17000000)
-	quotaValue(t, carbon.Requests.Remaining, 200)
+	quotaValue(t, carbon.Requests.Remaining, 150)
 	quotaValue(t, carbon.Tokens.Used, 0)
 	argon = quotaRead(t, reopened, quotaMembers()[1:], next)
 	quotaValue(t, argon.Requests.Remaining, 150)
@@ -289,7 +289,7 @@ func TestQuotaExhaustionTierSwitchAndColdRead(t *testing.T) {
 	members[0].Tier = "Ultra"
 	ultra := quotaRead(t, store, members, now)
 	quotaValue(t, ultra.Tokens.Remaining, 20000000-100)
-	quotaValue(t, ultra.Requests.Remaining, 198)
+	quotaValue(t, ultra.Requests.Remaining, 148)
 	if ultra.Accounts[0].Exhausted429 {
 		t.Fatal("old Pro exhaustion was assigned to the current Ultra tier")
 	}

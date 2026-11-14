@@ -37,20 +37,20 @@ func TestQuotaObservedLimitsIsolateModelTierAccountAndDimension(t *testing.T) {
 	report := quotaRead(t, store, members, now)
 	b := quotaAccount(t, report, "b")
 	quotaValue(t, b.Tokens.Limit, 18000000)
-	quotaValue(t, b.Requests.Limit, 200)
+	quotaValue(t, b.Requests.Limit, 150)
 	quotaValue(t, quotaAccount(t, report, "c").Tokens.Limit, 20000000)
 	quotaValue(t, quotaAccount(t, report, "a").Tokens.Limit, 15000000)
 	quotaValue(t, report.Tokens.Limit, 53000000)
 	quotaValue(t, carbonRead(t, store, quotaMembers(), now).Tokens.Limit, 20000000)
-	quotaValue(t, hydrogenRead(t, store, quotaMembers(), now).Tokens.Limit, 30000000)
+	quotaValue(t, hydrogenRead(t, store, quotaMembers(), now).Tokens.Limit, 20000000)
 
 	// A later request-count observation changes only that field.
-	store.RecordQuotaAttempt(observedLimitSend("requests", "b", argonQuota.model, "ultra", now.Add(time.Second), quotaInt(150), nil))
+	store.RecordQuotaAttempt(observedLimitSend("requests", "b", argonQuota.model, "ultra", now.Add(time.Second), quotaInt(137), nil))
 	report = quotaRead(t, store, members, now)
 	b = quotaAccount(t, report, "b")
 	quotaValue(t, b.Tokens.Limit, 18000000)
-	quotaValue(t, b.Requests.Limit, 150)
-	quotaValue(t, quotaAccount(t, report, "c").Requests.Limit, 200)
+	quotaValue(t, b.Requests.Limit, 137)
+	quotaValue(t, quotaAccount(t, report, "c").Requests.Limit, 150)
 
 	store.RecordQuotaAttempt(observedLimitSend("carbon", "b", carbonQuota.model, "ultra", now.Add(2*time.Second), nil, quotaInt(17000000)))
 	quotaValue(t, carbonRead(t, store, quotaMembers(), now).Tokens.Limit, 17000000)
@@ -69,7 +69,7 @@ func TestQuotaObservedLimitsIsolateModelTierAccountAndDimension(t *testing.T) {
 
 func TestQuotaObservedLimitsPersistAcrossWindowsAndRejectOlderEvidence(t *testing.T) {
 	store, path, now := quotaFixture(t)
-	newer := observedLimitSend("newer", "b", argonQuota.model, "ultra", now.Add(time.Second), quotaInt(150), quotaInt(20000000))
+	newer := observedLimitSend("newer", "b", argonQuota.model, "ultra", now.Add(time.Second), quotaInt(137), quotaInt(20000000))
 	store.RecordQuotaAttempt(newer)
 	store.RecordQuotaAttempt(newer)
 	older := observedLimitSend("older", "b", argonQuota.model, "ultra", now, quotaInt(200), quotaInt(30000000))
@@ -87,9 +87,9 @@ func TestQuotaObservedLimitsPersistAcrossWindowsAndRejectOlderEvidence(t *testin
 	defer reopened.Close()
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	b := quotaAccount(t, quotaRead(t, reopened, quotaMembers(), next), "b")
-	quotaValue(t, b.Requests.Limit, 150)
+	quotaValue(t, b.Requests.Limit, 137)
 	quotaValue(t, b.Tokens.Limit, 20000000)
-	quotaValue(t, b.Requests.Remaining, 150)
+	quotaValue(t, b.Requests.Remaining, 137)
 	quotaValue(t, b.Tokens.Remaining, 20000000)
 
 	// A zero limit is an explicit observation, not an unknown or excluded account.
@@ -99,7 +99,7 @@ func TestQuotaObservedLimitsPersistAcrossWindowsAndRejectOlderEvidence(t *testin
 		t.Fatal("observed zero limit excluded an eligible member")
 	}
 	quotaValue(t, b.Tokens.Limit, 0)
-	quotaValue(t, b.Requests.Limit, 150)
+	quotaValue(t, b.Requests.Limit, 137)
 }
 
 func TestQuotaObservedLimitsIgnoreUnknownEvidenceAndCopyNumericValues(t *testing.T) {
@@ -123,7 +123,7 @@ func TestQuotaObservedLimitsIgnoreUnknownEvidenceAndCopyNumericValues(t *testing
 	}
 	b := quotaAccount(t, quotaRead(t, store, quotaMembers(), now), "b")
 	quotaValue(t, b.Tokens.Limit, 20000000)
-	quotaValue(t, b.Requests.Limit, 200)
+	quotaValue(t, b.Requests.Limit, 150)
 
 	value := int64(19000000)
 	attempt := observedLimitSend("copied", "b", argonQuota.model, "ultra", now.Add(time.Second), nil, &value)

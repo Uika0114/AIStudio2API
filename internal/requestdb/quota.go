@@ -238,13 +238,10 @@ type quotaUsage struct {
 }
 
 func quotaInt(value int64) *int64 { return &value }
-func quotaCaps(model, tier string) (requests, tokens int64) {
+func quotaCaps(tier string) (requests, tokens int64) {
 	switch strings.ToLower(tier) {
 	case "ultra":
-		if model == hydrogenQuota.model {
-			return 200, 30000000
-		}
-		return 200, 20000000
+		return 150, 20000000
 	case "pro":
 		return 50, 15000000
 	}
@@ -363,7 +360,7 @@ func (store *Store) QuotaSnapshotForModel(ctx context.Context, members []api.Quo
 			}
 		}
 		account := api.QuotaAccount{ID: member.ID, Label: member.Label, Tier: member.Tier, State: member.State, Exhausted429: u.unknownLimited || u.tokensLimited || u.requestsLimited, InFlight: u.inFlight, Unreported: u.unreported}
-		r, t := quotaCaps(scope.model, member.Tier)
+		r, t := quotaCaps(member.Tier)
 		if r > 0 {
 			if limit, ok := limits[quotaLimitKey{strings.ToLower(member.Tier), member.ID, "requests"}]; ok {
 				r = limit

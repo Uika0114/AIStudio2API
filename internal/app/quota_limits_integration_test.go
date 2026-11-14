@@ -19,7 +19,7 @@ func TestQuotaLimitsNativeHTTPObservationAndColdRead(t *testing.T) {
 			t.Run(model+"/"+protocol, func(t *testing.T) {
 				service, preparer := newOutputHTTPFixture(t, aistudio.ChannelPlayground, "http429", model)
 				preparer.tierHeader = "TIER2"
-				preparer.quotaMessage = fmt.Sprintf("private-error-sentinel\nQuota exceeded for metric: generativelanguage.googleapis.com/generate_content_tokens_per_model_per_user, limit: 19000000, model: %s, description: Generate content tokens per user per day limit exceeded.\nQuota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user, limit: 150, model: %s, description: Generate content requests per user per day limit exceeded.", model, model)
+				preparer.quotaMessage = fmt.Sprintf("private-error-sentinel\nQuota exceeded for metric: generativelanguage.googleapis.com/generate_content_tokens_per_model_per_user, limit: 19000000, model: %s, description: Generate content tokens per user per day limit exceeded.\nQuota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user, limit: 137, model: %s, description: Generate content requests per user per day limit exceeded.", model, model)
 				path := filepath.Join(t.TempDir(), "limits.db")
 				store := completeQuotaFixture(t, path)
 				defer store.Close()
@@ -48,7 +48,7 @@ func TestQuotaLimitsNativeHTTPObservationAndColdRead(t *testing.T) {
 				}
 				assert := func(report api.QuotaReport) {
 					if report.Tokens.Limit == nil || *report.Tokens.Limit != 19000000 ||
-						report.Requests.Limit == nil || *report.Requests.Limit != 150 ||
+						report.Requests.Limit == nil || *report.Requests.Limit != 137 ||
 						report.Requests.Used == nil || *report.Requests.Used != 1 ||
 						report.Tokens.Used == nil || *report.Tokens.Used != 0 {
 						t.Fatalf("native limit observation missing: %+v", report)
@@ -84,7 +84,50 @@ func TestQuotaLimitsHTTPTokenErrorDoesNotExhaustRequests(t *testing.T) {
 	}
 	report := quotaHTTPRead(t, handler)
 	if report.Tokens.Remaining == nil || *report.Tokens.Remaining != 0 ||
-		report.Requests.Remaining == nil || *report.Requests.Remaining != 199 {
+		report.Requests.Remaining == nil || *report.Requests.Remaining != 149 {
 		t.Fatalf("HTTP evidence did not refine the initial unknown 429: %+v", report)
+	}
+}
+
+func TestQuotaLimitsHTTPRequestsWithDocsSuffixAndColdRead(t *testing.T) {
+	for _, protocol := range []string{"chat", "responses", "gemini"} {
+		t.Run(protocol, func(t *testing.T) {
+			service, preparer := newOutputHTTPFixture(t, aistudio.ChannelPlayground, "http429", "gemini-4-argon")
+			preparer.tierHeader = "TIER2"
+			preparer.quotaMessage = "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_user, limit: 150, model: gemini-4-argon, description: Generate content requests per user per day limit exceeded. See https://aistudio.google.com/docs/rate-limits.\nPlease retry in 3h33m29.211599301s."
+			path := filepath.Join(t.TempDir(), "requests-with-docs.db")
+			store := completeQuotaFixture(t, path)
+			defer store.Close()
+			service.quotaObserver = store.RecordQuotaAttempt
+			view := &quotaHTTPView{store: store, account: service.account}
+			handler := api.NewHandler(service, api.Config{Quota: view})
+			response := quotaHTTPGenerate(t, handler, "playground/gemini-4-argon", protocol, false)
+			if response.Code != 429 || preparer.calls != 1 {
+				t.Fatalf("error path changed: status=%d sends=%d", response.Code, preparer.calls)
+			}
+			assert := func() {
+				t.Helper()
+				report := quotaHTTPRead(t, handler)
+				if report.Requests.Limit == nil || *report.Requests.Limit != 150 ||
+					report.Requests.Used == nil || *report.Requests.Used != 1 ||
+					report.Requests.Remaining == nil || *report.Requests.Remaining != 0 ||
+					report.Tokens.Limit == nil || *report.Tokens.Limit != 20000000 ||
+					report.Tokens.Remaining == nil || *report.Tokens.Remaining != 20000000 ||
+					len(report.Accounts) != 1 || !report.Accounts[0].Exhausted429 {
+					t.Fatalf("requests-only HTTP evidence stayed unknown or exhausted tokens: %+v", report)
+				}
+			}
+			assert()
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := requestdb.Open(path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			view.store = reopened
+			assert()
+		})
 	}
 }

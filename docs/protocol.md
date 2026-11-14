@@ -698,10 +698,14 @@ ListModels 能力码 91（目录能力 `output_continuation`）的模型由官�
 | 12 | unexpected_tool_call | 13 | too_many_tool_calls |
 | 14 | image_prohibited_content | 15 | image_other |
 | 16 | no_image | 17 | image_recitation |
-| 18 | missing_thought_signature | 19 | `provider_19` |
+| 18 | missing_thought_signature | 19 | malformed_response |
 | 其他整数 | `provider_<code>` | | |
 
 Build 通道的 Gemini API 终止原因去掉 `FINISH_REASON_` 前缀后转为上表的同名小写原因，上表没有的名称为 `provider_<小写名称>`。
+
+Playground/Build 以 `malformed_response` 正常结束且没有交付正文、思考、签名、函数调用、代码执行或媒体时，在同一账户上以同一请求最多重新生成 3 次（含首发最多 4 轮）。此上限不改变既有鉴权重放、Build 模式回退或 Playground 续写，每次物理发送仍独立记账；公开 usage 取最后一轮，先前轮次的已知 usage 保留在 attempt 账本。取消、5xx、断流、破帧及其他终态不进入此重新生成路径，重发失败按错误结束，次数耗尽则保留最后的 `malformed_response` 终态。
+
+重新生成前暂存的来源与引用被丢弃，未重新生成的来源保持输出；隐藏且无签名的思考可丢弃，已输出的思考或签名不可撤回。原始函数调用（包括空的抗截断运输调用）、代码执行与媒体在投影前就禁止重试，不据未知服务端工具类型推断可重放。此回移植不新增上游新版 MCP/服务端工具协议或更改安全设置。流式响应可能已发响应头、框架帧或心跳，重试始终属于同一个逻辑响应，不重建 HTTP 响应。
 
 generation config、安全设置、工具与转写配置在选择账户前按各账户已载入的模型目录校验，任一账户的条目接受即通过。流式请求在写出响应头前等待首个事件：参数错误与首个事件之前的上游错误按非流式返回 HTTP 状态与错误对象；10 秒内没有事件时先写出响应头，此后的错误以各协议的流内错误事件返回。
 
@@ -715,9 +719,9 @@ generation config、安全设置、工具与转写配置在选择账户前按各
 | `stop_sequence` | `stop` | `completed` | `stop_sequence` 与实际序列 | `STOP` |
 | `max_tokens` | `length` | `incomplete/max_output_tokens` | `max_tokens` | `MAX_TOKENS` |
 | safety、recitation、blocklist、prohibited_content、spii、图片对应原因与 `provider_*` | `content_filter` | `incomplete/content_filter` | `refusal` | 对应 Gemini 枚举或 `OTHER` |
-| other、language、malformed_function_call、签名缺失等其他终态 | `stop`，含函数调用时 `tool_calls` | `completed` | `end_turn`，含函数调用时 `tool_use` | 对应 Gemini 枚举 |
+| other、language、malformed_function_call、malformed_response、签名缺失等其他终态 | `stop`，含函数调用时 `tool_calls` | `completed` | `end_turn`，含函数调用时 `tool_use` | 对应 Gemini 枚举 |
 
-内容拦截终态优先于同一结果中的工具调用终态，已产生的正文、reasoning、工具事件和 usage 保持在响应中。`provider_*` 在 Chat choice、Responses response、Anthropic message 或 `message_delta` 的 `provider_finish_reason` 中保留原值；Gemini 使用 `finishMessage` 保留编号。`provider_19` 对应 AI Studio 页面的 `Content blocked`。
+内容拦截终态优先于同一结果中的工具调用终态，已产生的正文、reasoning、工具事件和 usage 保持在响应中。`provider_*` 在 Chat choice、Responses response、Anthropic message 或 `message_delta` 的 `provider_finish_reason` 中保留原值；Gemini 使用 `finishMessage` 保留编号。`malformed_response`（Playground 编号 19）可能在 AI Studio 页面显示为 `Content blocked`，但不映射为内容策略拦截。回移植依据上游 PR #100 的最终合并 `a7afc31252dbb2543d79ac664eabf569148303bc`，重试范围比上游更窄。
 
 ## 6. 函数、Google 工具、Drive 与媒体
 

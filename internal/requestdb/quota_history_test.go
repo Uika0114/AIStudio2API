@@ -67,7 +67,7 @@ func TestQuotaHistoryBootstrapsAndReplaysWithoutDoubleCounting(t *testing.T) {
 	store, path, now := historyFixture(t, []Row{historicalRow("old-1", from.Add(20*time.Minute), a, older), historicalRow("old-2", from.Add(21*time.Minute), a)}, nil)
 	report := quotaRead(t, store, quotaMembers(), now)
 	quotaValue(t, report.Requests.Used, 2)
-	quotaValue(t, report.Requests.Remaining, 248)
+	quotaValue(t, report.Requests.Remaining, 198)
 	quotaValue(t, report.Tokens.Used, 250000)
 	quotaValue(t, report.Tokens.Remaining, 34750000)
 	if report.Coverage != "history_estimate" || report.History == nil || report.History.Attempts != 2 || !report.ObservedSince.Equal(from.Add(30*time.Minute)) {

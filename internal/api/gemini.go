@@ -1227,6 +1227,8 @@ func geminiFinishReason(reason string) string {
 		return "SPII"
 	case "malformed_function_call":
 		return "MALFORMED_FUNCTION_CALL"
+	case "malformed_response":
+		return "MALFORMED_RESPONSE"
 	case "image_safety":
 		return "IMAGE_SAFETY"
 	case "unexpected_tool_call":

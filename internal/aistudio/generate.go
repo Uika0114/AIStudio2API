@@ -777,15 +777,16 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 	ctx = contextWithRawGenerationObserver(ctx, rawState.observe)
 	wireRequest := request
 	wireRequest.Config.StopSequences = nil
-	var response *RPCResponse
-	var decodeStream func(io.Reader, func(Event) error) error
-	if assistant {
-		response, decodeStream, err = c.sendAssistant(ctx, wireRequest, entry)
-	} else if build {
-		response, decodeStream, err = c.sendBuild(ctx, wireRequest, entry)
-	} else {
-		response, decodeStream, err = c.sendPlayground(ctx, wireRequest, entry)
+	sendRequest := func(ctx context.Context) (*RPCResponse, func(io.Reader, func(Event) error) error, error) {
+		if assistant {
+			return c.sendAssistant(ctx, wireRequest, entry)
+		}
+		if build {
+			return c.sendBuild(ctx, wireRequest, entry)
+		}
+		return c.sendPlayground(ctx, wireRequest, entry)
 	}
+	response, decodeStream, err := sendRequest(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -800,10 +801,11 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 		defer close(events)
 		defer cancelTokenCount()
 		defer func() { observation.finish(context.Canceled) }()
-		stopClose := context.AfterFunc(ctx, func() {
-			_ = response.Body.Close()
-		})
-		defer stopClose()
+		closeOnCancel := func(response *RPCResponse) func() bool {
+			return context.AfterFunc(ctx, func() { _ = response.Body.Close() })
+		}
+		stopClose := closeOnCancel(response)
+		defer func() { stopClose() }()
 		send := func(event Event) error {
 			event.ProviderModel = entry.model.ID
 			event.Channel = actualChannel
@@ -817,6 +819,18 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 		var usage *Usage
 		var finish *Event
 		var output generatedOutputParts
+		// Do not replay any delivered content, including thinking and signatures.
+		committed := false
+		var sources []Event
+		releaseSources := func() error {
+			for _, source := range sources {
+				if err := send(source); err != nil {
+					return err
+				}
+			}
+			sources = nil
+			return nil
+		}
 		matchedStopSequence := ""
 		emitEvent := func(event Event) error {
 			switch event.Kind {
@@ -830,6 +844,12 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 				value := event
 				finish = &value
 				return nil
+			case EventGrounding, EventCitation:
+				if !committed {
+					sources = append(sources, event)
+					return nil
+				}
+				return send(event)
 			default:
 				output.observe(event)
 				if request.Config.HideThinking && event.Kind == EventReasoning {
@@ -838,11 +858,20 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 					}
 					event.Kind, event.Text = EventThoughtSignature, ""
 				}
+				committed = true
+				if err := releaseSources(); err != nil {
+					return err
+				}
 				return send(event)
 			}
 		}
 		projectedEmit := stopSequenceEmitter(matcher, emitEvent, &matchedStopSequence)
 		emit := func(event Event) error {
+			// Raw calls also block replay when the anti transport hides an empty call.
+			switch event.Kind {
+			case EventToolCall, EventExecutableCode, EventCodeExecutionResult, EventMedia:
+				committed = true
+			}
 			if transport == nil {
 				return projectedEmit(event)
 			}
@@ -858,6 +887,30 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (result 
 			return nil
 		}
 		err := decodeStream(observeStreamActivity(ctx, response.Body), emit)
+		// PR #100: at most three extra generations, not a cross-layer send budget.
+		for regenerated := 0; regenerated < 3 && !assistant && !committed && ctx.Err() == nil && err == nil && finish != nil && finish.FinishReason == "malformed_response"; regenerated++ {
+			stopClose()
+			_ = response.Body.Close()
+			usage, finish, sources = nil, nil, nil
+			output = generatedOutputParts{}
+			*rawState = rawGenerationState{observeOutput: transport != nil}
+			matcher = newStopSequenceMatcher(request.Config.StopSequences)
+			projectedEmit = stopSequenceEmitter(matcher, emitEvent, &matchedStopSequence)
+			if transport != nil {
+				transport = &AntiTruncationTransport{name: transport.name, textLimit: transport.textLimit, observation: observation}
+			}
+			next, decode, sendErr := sendRequest(ContextWithGenerationAttemptReason(ctx, "malformed_response_regeneration"))
+			if sendErr != nil {
+				err = sendErr
+				break
+			}
+			response, decodeStream = next, decode
+			stopClose = closeOnCancel(response)
+			err = decodeStream(observeStreamActivity(ctx, response.Body), emit)
+		}
+		if releaseSources() != nil {
+			return
+		}
 		if errors.Is(err, errStopSequenceMatched) {
 			observation.finish(err)
 			_ = response.Body.Close()
@@ -1110,7 +1163,7 @@ func (c *Client) sendPlayground(ctx context.Context, request GenerateRequest, en
 		return nil, nil, err
 	}
 	return response, func(source io.Reader, emit func(Event) error) error {
-		return c.decodePlaygroundRounds(ctx, request, entry.defaults, runtime, source, emit, response.attempt)
+		return c.decodePlaygroundRounds(ctx, request, entry.defaults, runtime, source, restoreFunctionNames(request.Tools.Functions, emit), response.attempt)
 	}, nil
 }
 
@@ -1125,6 +1178,8 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 		total, _ = config[3].(int64)
 	}
 	var previous *Usage
+	closeRound := func() {}
+	defer func() { closeRound() }()
 	for {
 		decoder := NewFrameDecoder()
 		decoder.output = attempt.outputDecoder()
@@ -1180,6 +1235,7 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 		if err != nil {
 			return err
 		}
+		closeRound()
 		response, err := c.doProtected(ctx, request, body)
 		if err != nil {
 			return err
@@ -1187,8 +1243,10 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 		stopClose := context.AfterFunc(ctx, func() {
 			_ = response.Body.Close()
 		})
-		defer stopClose()
-		defer response.Body.Close()
+		closeRound = func() {
+			stopClose()
+			_ = response.Body.Close()
+		}
 		source = observeStreamActivity(ctx, response.Body)
 		attempt = response.attempt
 	}

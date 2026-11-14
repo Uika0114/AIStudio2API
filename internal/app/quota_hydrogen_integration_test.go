@@ -81,7 +81,7 @@ func TestHydrogenQuotaNativeHTTPColdReadAndLegacyArgonIsolation(t *testing.T) {
 						t.Fatalf("generation %d %s", rec.Code, rec.Body.String())
 					}
 					report := hydrogenQuotaHTTPRead(t, handler)
-					if report.Tokens.Used == nil || *report.Tokens.Used != 1520 || report.Requests.Used == nil || *report.Requests.Used != 1 || report.Tokens.Remaining == nil || *report.Tokens.Remaining != 30000000-1520 || preparer.calls != 1 {
+					if report.Tokens.Used == nil || *report.Tokens.Used != 1520 || report.Requests.Used == nil || *report.Requests.Used != 1 || report.Tokens.Remaining == nil || *report.Tokens.Remaining != 20000000-1520 || preparer.calls != 1 {
 						t.Fatalf("native Hydrogen observation: %+v sends=%d", report, preparer.calls)
 					}
 					argon := quotaHTTPRead(t, handler)

@@ -68,9 +68,9 @@ func TestQuotaReportedUsageDeduplicatesAndColdReads(t *testing.T) {
 	store.RecordQuotaAttempt(quotaSend("root/attempt-2", "a", now, 5000))
 	store.RecordQuotaAttempt(quotaSend("root/attempt-3", "b", now, 70000))
 	report := quotaRead(t, store, quotaMembers(), now)
-	quotaValue(t, report.Requests.Limit, 250)
+	quotaValue(t, report.Requests.Limit, 200)
 	quotaValue(t, report.Requests.Used, 3)
-	quotaValue(t, report.Requests.Remaining, 247)
+	quotaValue(t, report.Requests.Remaining, 197)
 	quotaValue(t, report.Tokens.Limit, 35000000)
 	quotaValue(t, report.Tokens.Used, 200000)
 	quotaValue(t, report.Tokens.Remaining, 34800000)
@@ -87,7 +87,7 @@ func TestQuotaReportedUsageDeduplicatesAndColdReads(t *testing.T) {
 	defer reopened.Close()
 	cold := quotaRead(t, reopened, quotaMembers(), now)
 	quotaValue(t, cold.Tokens.Used, 200000)
-	quotaValue(t, cold.Requests.Remaining, 247)
+	quotaValue(t, cold.Requests.Remaining, 197)
 	// Same local sequence after restart is another physical send, not a collision.
 	reopened.RecordQuotaAttempt(quotaSend("root/attempt-1", "a", now, 100))
 	quotaValue(t, quotaRead(t, reopened, quotaMembers(), now).Requests.Used, 4)
@@ -117,7 +117,7 @@ func TestQuotaUnknown429KeepsBothBalancesUnknownUntilReset(t *testing.T) {
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	fresh := quotaRead(t, store, quotaMembers(), next)
 	quotaValue(t, fresh.Tokens.Remaining, 35000000)
-	quotaValue(t, fresh.Requests.Remaining, 250)
+	quotaValue(t, fresh.Requests.Remaining, 200)
 	if fresh.Accounts[0].Exhausted429 {
 		t.Fatal("429 leaked into new window")
 	}
@@ -188,7 +188,7 @@ func TestQuotaInitialPartialMembersAndBoundary(t *testing.T) {
 	next := QuotaWindow(now).Add(24 * time.Hour)
 	members := append(quotaMembers(), api.QuotaMember{ID: "a", Label: "renamed duplicate", Tier: "Ultra", Enabled: true}, api.QuotaMember{ID: "off", Tier: "Ultra", Enabled: false}, api.QuotaMember{ID: "unknown", Tier: "Plus", Enabled: true})
 	fresh := quotaRead(t, store, members, next)
-	quotaValue(t, fresh.Requests.Limit, 250)
+	quotaValue(t, fresh.Requests.Limit, 200)
 	if fresh.ExcludedAccounts != 1 || len(fresh.Accounts) != 3 {
 		t.Fatalf("bad members: %+v", fresh)
 	}

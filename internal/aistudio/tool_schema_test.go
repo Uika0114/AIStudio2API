@@ -2,6 +2,7 @@ package aistudio
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -123,5 +124,163 @@ func TestToolSchemaKeepsFileTools(t *testing.T) {
 	after, _ := json.Marshal(tools)
 	if string(before) != string(after) {
 		t.Fatal("原始工具集发生变化")
+	}
+}
+
+// TestToolSchemaLongFunctionNames 验证声明、历史与计数使用同一短名，回传原名且不改调用方数据。
+func TestToolSchemaLongFunctionNames(t *testing.T) {
+	prefix := "mcp__codex_apps__codex_document_control___execute_document_"
+	names := []string{prefix + "command", prefix + "commands", "Read", strings.Repeat("a", 63), strings.Repeat("b", 64)}
+	functions := make([]FunctionDeclaration, 0, len(names))
+	for _, name := range names {
+		functions = append(functions, FunctionDeclaration{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)})
+	}
+	before, _ := json.Marshal(functions)
+	wire, _, err := encodeRequestedTools(Tools{Functions: functions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := make([]string, 0, len(names))
+	for _, declaration := range wire[0].([]any)[1].([]any) {
+		sent = append(sent, declaration.([]any)[0].(string))
+	}
+	for index, name := range sent {
+		if len(name) > 63 || name != wireFunctionName(names[index]) {
+			t.Fatalf("声明的函数名 %q", sent)
+		}
+	}
+	if sent[0] == sent[1] || sent[2] != "Read" || sent[3] != names[3] || sent[4] == names[4] {
+		t.Fatalf("边界或同前缀名称处理错误: %q", sent)
+	}
+	contents := []Content{
+		{Role: RoleUser, Parts: []Part{{Text: "run"}}},
+		{Role: RoleAssistant, Parts: []Part{{FunctionCall: &FunctionCall{ID: "call-1", Name: names[0], Arguments: json.RawMessage(`{}`)}}}},
+		{Role: RoleUser, Parts: []Part{{FunctionResult: &FunctionResult{ID: "call-1", Content: json.RawMessage(`{"ok":true}`)}}}},
+	}
+	historyBefore, _ := json.Marshal(contents)
+	encoded, err := encodeContents(contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, _ := json.Marshal(encoded)
+	if strings.Count(string(history), `"`+sent[0]+`"`) != 2 || strings.Contains(string(history), names[0]) {
+		t.Fatalf("历史中的函数名与声明不一致: %s", history)
+	}
+	count, err := EncodeCountTokensRequest(TokenCountRequest{Model: "fixture-model", Contents: contents, Tools: Tools{Functions: functions}})
+	if err != nil || strings.Count(string(count), `"`+sent[0]+`"`) != 3 || strings.Contains(string(count), names[0]) {
+		t.Fatalf("计数名称不一致: %s, %v", count, err)
+	}
+	var received []string
+	emit := restoreFunctionNames(functions, func(event Event) error {
+		received = append(received, event.ToolCall.Name)
+		return nil
+	})
+	for _, name := range sent {
+		call := &FunctionCall{Name: name}
+		if err := emit(Event{Kind: EventToolCall, ToolCall: call}); err != nil {
+			t.Fatal(err)
+		}
+		if call.Name != name {
+			t.Fatal("回传改写了上游事件")
+		}
+	}
+	if !reflect.DeepEqual(received, names) {
+		t.Fatalf("回传的函数名 %q", received)
+	}
+	after, _ := json.Marshal(functions)
+	historyAfter, _ := json.Marshal(contents)
+	if string(before) != string(after) || string(historyBefore) != string(historyAfter) {
+		t.Fatal("原始声明或历史发生变化")
+	}
+}
+
+// TestLongFunctionNamePipeline 验证 PG 原名恢复先于本地工具契约，Build 保留原名。
+func TestLongFunctionNamePipeline(t *testing.T) {
+	name := "mcp__long_tool_" + strings.Repeat("action_", 10)
+	for _, channel := range []Channel{ChannelPlayground, ChannelBuild} {
+		for _, anti := range []bool{false, true} {
+			model := string(channel) + "/"
+			if anti {
+				model += "anti-truncation/"
+			}
+			model += "fixture-model"
+			t.Run(model, func(t *testing.T) {
+				fixture := newPipelineFixture(t, channel)
+				fixture.reply = func(request GenerateRequest, rpc RPCRequest, _ int) ([]byte, error) {
+					wire := string(rpc.Body)
+					want, unwanted := wireFunctionName(name), name
+					if channel == ChannelBuild {
+						want, unwanted = name, wireFunctionName(name)
+					}
+					if !strings.Contains(wire, want) || strings.Contains(wire, unwanted) && channel == ChannelBuild {
+						t.Fatalf("通道工具名称错误: %s", wire)
+					}
+					parts := []Part{{FunctionCall: &FunctionCall{ID: "call-long", Name: want, Arguments: json.RawMessage(`{"value":"ok"}`)}, ThoughtSignature: "long-signature"}}
+					return fixtureResponse(t, rpc, parts, "stop", &Usage{InputTokens: 10, OutputTokens: 9, TotalTokens: 19}, ""), nil
+				}
+				events := fixture.generate(t, GenerateRequest{Model: model, Tools: Tools{
+					Functions:  []FunctionDeclaration{{Name: name, Parameters: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}`), Strict: true}},
+					ToolConfig: ToolConfig{Mode: "required", AllowedFunctionNames: []string{name}},
+				}})
+				if err := pipelineError(events); err != nil {
+					t.Fatal(err)
+				}
+				calls := 0
+				for _, event := range events {
+					if event.ToolCall != nil {
+						calls++
+						if event.ToolCall.Name != name || event.ToolCall.ID != "call-long" || string(event.ToolCall.Arguments) != `{"value":"ok"}` || event.ThoughtSignature != "long-signature" {
+							t.Fatalf("公开工具调用发生变化: %+v", event)
+						}
+					}
+				}
+				if calls != 1 || pipelineFinish(events) == nil || len(fixture.sends) != 1 {
+					t.Fatalf("调用/终态/请求次数错误: %d/%+v/%d", calls, pipelineFinish(events), len(fixture.sends))
+				}
+			})
+		}
+	}
+}
+
+func TestToolSchemaWireNameCollision(t *testing.T) {
+	longName := strings.Repeat("a", 64)
+	shortName := wireFunctionName(longName)
+	for _, names := range [][]string{{longName, shortName}, {shortName, longName}} {
+		t.Run(names[0], func(t *testing.T) {
+			tools := Tools{Functions: []FunctionDeclaration{{Name: names[0]}, {Name: names[1]}}}
+			before, _ := json.Marshal(tools)
+			contents := []Content{{Role: RoleUser, Parts: []Part{{Text: "run"}}}}
+			fixture := newPipelineFixture(t, ChannelPlayground)
+			fixture.reply = func(GenerateRequest, RPCRequest, int) ([]byte, error) {
+				return nil, errors.New("unexpected physical send")
+			}
+			_, generateErr := fixture.client.Generate(fixture.ctx, GenerateRequest{
+				ID: t.Name(), AccountID: fixture.account.ID, Model: "playground/fixture-model",
+				Contents: contents, Tools: tools,
+			})
+			_, countErr := fixture.client.CountTokens(fixture.ctx, TokenCountRequest{
+				Model: "fixture-model", Contents: contents, Tools: tools,
+			})
+			for _, err := range []error{generateErr, countErr} {
+				if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "函数名冲突") || !strings.Contains(err.Error(), longName) || !strings.Contains(err.Error(), shortName) {
+					t.Fatalf("未清晰拒绝冲突的工具声明: %v", err)
+				}
+			}
+			if len(fixture.sends) != 0 {
+				t.Fatalf("冲突工具声明已发往上游: %d", len(fixture.sends))
+			}
+			wire, _, err := encodeBuildTools(tools)
+			if err != nil {
+				t.Fatal(err)
+			}
+			build, _ := json.Marshal(wire)
+			if !strings.Contains(string(build), `"`+longName+`"`) || !strings.Contains(string(build), `"`+shortName+`"`) {
+				t.Fatalf("Build 的不同原名被改写: %s", build)
+			}
+			after, _ := json.Marshal(tools)
+			if string(before) != string(after) {
+				t.Fatal("原始工具声明发生变化")
+			}
+		})
 	}
 }
