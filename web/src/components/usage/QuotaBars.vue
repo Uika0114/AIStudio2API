@@ -33,20 +33,53 @@ const metrics = computed(() => [
     key: 'tokens' as const,
     icon: 'tokens' as const,
     label: t('quota.tokens'),
-    balance: props.report?.tokens,
+    balance: displayBalance(props.report?.tokens, 'tokens'),
     color: 'bg-blue-500/35',
   },
   {
     key: 'requests' as const,
     icon: 'requests' as const,
     label: t('quota.requests'),
-    balance: props.report?.requests,
+    balance: displayBalance(props.report?.requests, 'requests'),
     color: 'bg-green-500/30',
   },
 ])
 const accounts = computed(() => props.report?.accounts ?? [])
 function valid(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+type DisplayBalance = QuotaBalance & { unknownAccounts?: number }
+function displayBalance(
+  balance: QuotaBalance | undefined,
+  metric: 'tokens' | 'requests',
+): DisplayBalance | undefined {
+  if (props.error) return undefined
+  if (balance?.remaining !== null || !valid(balance.limit) || balance.limit === 0) return balance
+  const members = (props.report?.accounts ?? []).filter((account) => account.included === true)
+  let limit = 0
+  let remaining = 0
+  let known = 0
+  let unknown = 0
+  for (const account of members) {
+    const value = account[metric]
+    if (!valid(value.limit)) return balance
+    limit += value.limit
+    if (valid(value.remaining)) {
+      remaining += value.remaining
+      known++
+    } else if (value.remaining === null) {
+      unknown++
+    } else {
+      return balance
+    }
+  }
+  if (!known || !unknown || limit !== balance.limit) return balance
+  return { ...balance, remaining, unknownAccounts: unknown }
+}
+function balanceLabel(balance: DisplayBalance | undefined, tokens: boolean): string {
+  const label = balance?.unknownAccounts ? t('quota.known') : t('quota.remaining')
+  const value = `${label} ${number(balance?.remaining, tokens)} / ${number(balance?.limit, tokens)}`
+  return balance?.unknownAccounts ? `${value}, ${percent(balance)}` : value
 }
 function ratio(balance: QuotaBalance | undefined): number | undefined {
   if (!balance || !valid(balance.limit) || balance.limit === 0 || !valid(balance.remaining))
@@ -62,7 +95,9 @@ function exact(value: number | null | undefined): string {
 function used(balance: QuotaBalance): number | null {
   return valid(balance.used) ? balance.used : null
 }
-function percent(balance: QuotaBalance | undefined): string {
+function percent(balance: DisplayBalance | undefined): string {
+  if (balance?.unknownAccounts)
+    return t('quota.unknownAccounts').replace('{count}', integer.value.format(balance.unknownAccounts))
   const value = ratio(balance)
   return value === undefined ? '—' : percentage.value.format(value / 100)
 }
@@ -88,7 +123,8 @@ function percent(balance: QuotaBalance | undefined): string {
             :model-value="ratio(metric.balance) ?? null"
             :max="100"
             :aria-label="`${modelLabel} ${metric.label}`"
-            :aria-valuetext="`${t('quota.remaining')} ${number(metric.balance?.remaining, metric.key === 'tokens')} / ${number(metric.balance?.limit, metric.key === 'tokens')}`"
+            :aria-valuetext="balanceLabel(metric.balance, metric.key === 'tokens')"
+            :data-quota-partial="metric.balance?.unknownAccounts ? 'true' : undefined"
             class="relative h-8 w-full overflow-hidden rounded-md bg-raised"
             :class="{ 'quota-unknown': ratio(metric.balance) === undefined }"
           >
@@ -107,6 +143,7 @@ function percent(balance: QuotaBalance | undefined): string {
                 <span class="shrink-0">{{ modelLabel }}</span>
                 <span class="shrink-0">{{ metric.label }}</span>
                 <span
+                  ><span v-if="metric.balance?.unknownAccounts" class="mr-1">{{ t('quota.known') }}</span
                   ><span class="font-semibold">{{
                     number(metric.balance?.remaining, metric.key === 'tokens')
                   }}</span

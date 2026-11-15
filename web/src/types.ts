@@ -412,6 +412,7 @@ export interface QuotaBalance {
 
 export interface QuotaAccountEstimate {
   id: string
+  included: boolean
   label: string
   exhausted_429?: boolean
   tokens: QuotaBalance

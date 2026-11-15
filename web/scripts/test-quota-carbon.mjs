@@ -32,6 +32,7 @@ const report = (model, members = ['fixture-ultra']) => ({
   accounts: members.map((id) => ({
     id,
     label: '合成账号',
+    included: true,
     tokens: balance(30000000, 1000000),
     requests: balance(200, 20),
   })),
@@ -222,5 +223,67 @@ test('API client preserves the default Argon URL and explicitly scopes Carbon an
     ])
   } finally {
     globalThis.fetch = previous
+  }
+})
+
+for (const label of models) {
+  for (const metric of ['tokens', 'requests']) {
+    test(`${label} ${metric} shows only a labelled known subtotal when one member is unknown`, async () => {
+      const value = report(`gemini-4-${label.toLowerCase()}`, ['known', 'unknown'])
+      value[metric] = { limit: 1000, used: 100, remaining: null }
+      value.accounts[0][metric] = { limit: 500, used: 100, remaining: 400 }
+      value.accounts[1][metric] = { limit: 500, used: 0, remaining: null }
+      const key = label === 'Argon' ? 'report' : `${label.toLowerCase()}Report`
+      const html = poolHTML(await render({ [key]: value }), label)
+      assert.match(text(html), /已知\s*400/)
+      assert.match(text(html), /1\s*号未知/)
+      assert.match(html, /data-quota-partial="true"/)
+      assert.match(html, /aria-valuetext="[^"]*已知[^"]*400[^"]*1[^"]*号未知"/)
+      assert.doesNotMatch(html, /40%/)
+      assert.match(html, /translateX\(-60%\)/)
+      assert.equal(value[metric].remaining, null)
+      assert.equal(value.accounts[1][metric].remaining, null)
+    })
+  }
+}
+
+test('a zero known subtotal with another unknown member is not a zero whole pool', async () => {
+  const value = report('gemini-4-argon', ['known', 'unknown'])
+  value.tokens = { limit: 1000, used: 500, remaining: null }
+  value.accounts[0].tokens = { limit: 500, used: 500, remaining: 0 }
+  value.accounts[1].tokens = { limit: 500, used: 0, remaining: null }
+  const html = poolHTML(await render({ report: value }), 'Argon')
+  const tokenText = text(html).split('Argon请求数')[0]
+  assert.match(tokenText, /已知\s*0/)
+  assert.match(tokenText, /1\s*号未知/)
+  assert.doesNotMatch(tokenText, /0%/)
+})
+
+test('excluded and missing-included members are never inferred into a partial pool', async () => {
+  for (const included of [false, undefined]) {
+    const value = report('gemini-4-argon', ['known', 'unknown', 'not-in-pool'])
+    value.tokens = { limit: 1000, used: 100, remaining: null }
+    value.accounts[0].tokens = { limit: 500, used: 100, remaining: 400 }
+    value.accounts[1].tokens = { limit: 500, used: 0, remaining: null }
+    value.accounts[2].tokens = { limit: 500, used: 0, remaining: 500 }
+    value.accounts[2].included = included
+    const html = poolHTML(await render({ report: value }), 'Argon')
+    assert.match(text(html), /已知\s*400/)
+    assert.doesNotMatch(text(html), /已知\s*900/)
+  }
+})
+
+test('partial numbers are suppressed on errors or inconsistent member capacity', async () => {
+  for (const mode of ['error', 'capacity', 'missing-included']) {
+    const value = report('gemini-4-argon', ['known', 'unknown'])
+    value.tokens = { limit: 1000, used: 100, remaining: null }
+    value.accounts[0].tokens = { limit: 500, used: 100, remaining: 400 }
+    value.accounts[1].tokens = { limit: 500, used: 0, remaining: null }
+    if (mode === 'capacity') value.tokens.limit = 2000
+    if (mode === 'missing-included') delete value.accounts[0].included
+    const html = poolHTML(await render({ report: value, error: mode === 'error' ? '读取失败' : '' }), 'Argon')
+    assert.doesNotMatch(html, /data-quota-partial="true"/)
+    assert.doesNotMatch(text(html), /已知/)
+    assert.match(html, /quota-unknown/)
   }
 })

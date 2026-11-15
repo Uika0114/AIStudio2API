@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -212,15 +213,21 @@ func validateRPCResponse(method string, response *RPCResponse) (*RPCResponse, er
 		if readErr != nil {
 			return nil, fmt.Errorf("读取 AI Studio %s 错误响应: %w", method, readErr)
 		}
-		rpcError := DecodeRPCError(method, response.StatusCode, raw)
+		rpcError := decodeRPCError(method, response.StatusCode, raw)
 		response.attempt.observeQuotaError(rpcError)
 		if rpcError.RetryDelay <= 0 {
 			value := strings.TrimSpace(response.Header.Get("Retry-After"))
-			if delay, err := time.ParseDuration(value + "s"); err == nil && delay > 0 {
-				rpcError.RetryDelay = delay
+			if rpcRetryAfterSeconds.MatchString(value) {
+				rpcError.RetryDelay, _ = time.ParseDuration(value + "s")
 			} else if until, err := http.ParseTime(value); err == nil {
 				rpcError.RetryDelay = max(0, time.Until(until))
 			}
+		}
+		if rpcError.RetryDelay <= 0 {
+			rpcError.RetryDelay = messageRetryDelay(rpcError.Message)
+		}
+		if rpcError.RetryDelay <= 0 && rpcError.StatusCode == http.StatusTooManyRequests {
+			rpcError.RetryDelay = modelResetDelay(rpcError.Message)
 		}
 		return nil, rpcError
 	}
@@ -235,6 +242,15 @@ func validateRPCResponse(method string, response *RPCResponse) (*RPCResponse, er
 
 // DecodeRPCError 解析独立状态和流式封装中的上游错误
 func DecodeRPCError(method string, statusCode int, raw []byte) *RPCError {
+	decoded := decodeRPCError(method, statusCode, raw)
+	if decoded.RetryDelay <= 0 {
+		decoded.RetryDelay = messageRetryDelay(decoded.Message)
+	}
+	return decoded
+}
+
+// decodeRPCError leaves text fallback to the caller so HTTP headers can take priority.
+func decodeRPCError(method string, statusCode int, raw []byte) *RPCError {
 	rpcError := &RPCError{
 		Method:     method,
 		StatusCode: statusCode,
@@ -265,9 +281,6 @@ func DecodeRPCError(method string, statusCode int, raw []byte) *RPCError {
 	if len(provider) > 2 && !isJSONNull(provider[2]) {
 		decodeRPCErrorMetadata(rpcError, provider[2])
 	}
-	if rpcError.RetryDelay <= 0 {
-		rpcError.RetryDelay = messageRetryDelay(rpcError.Message)
-	}
 	return rpcError
 }
 
@@ -276,6 +289,29 @@ func messageRetryDelay(message string) time.Duration {
 	_, rest, _ := strings.Cut(strings.ToLower(message), "retry in ")
 	value, _, _ := strings.Cut(rest, " ")
 	delay, _ := time.ParseDuration(strings.TrimRight(value, "."))
+	return delay
+}
+
+var rpcRetryAfterSeconds = regexp.MustCompile(`^[0-9]+$`)
+var modelResetMessage = regexp.MustCompile(`(?i)^you've reached your usage limit for this model \(resets in (?:(\d+) hours?(?:, (\d+) minutes?)?|(\d+) minutes?)\)\.(?: |$)`)
+
+// modelResetDelay is HTTP-only timing evidence; it does not identify quota dimensions.
+func modelResetDelay(message string) time.Duration {
+	fields := modelResetMessage.FindStringSubmatch(strings.TrimSpace(message))
+	if fields == nil {
+		return 0
+	}
+	duration := ""
+	if fields[1] != "" {
+		duration = fields[1] + "h"
+	}
+	if fields[2] != "" {
+		duration += fields[2] + "m"
+	}
+	if fields[3] != "" {
+		duration = fields[3] + "m"
+	}
+	delay, _ := time.ParseDuration(duration)
 	return delay
 }
 

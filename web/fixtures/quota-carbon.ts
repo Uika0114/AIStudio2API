@@ -23,6 +23,7 @@ function report(model: QuotaEstimateReport['model']): QuotaEstimateReport {
     accounts: Array.from({ length: 6 }, (_, index) => ({
       id: `synthetic-${index}`,
       label: `合成账号 ${String.fromCharCode(65 + index)}`,
+      included: true,
       tokens: balance(
         30000000,
         isCarbon ? 25000000 : isHydrogen ? 15000000 : 12062166 + (index < 4 ? 1 : 0),
@@ -55,6 +56,7 @@ function setScenario(scenario: string): void {
     props.report.accounts = Array.from({ length: 3 }, (_, index) => ({
       id: `synthetic-pro-${index}`,
       label: `合成 Pro ${index + 1}`,
+      included: true,
       tokens: balance(15000000, 10000000),
       requests: balance(50, index === 0 ? 34 : 33),
     }))
@@ -80,6 +82,15 @@ function setScenario(scenario: string): void {
     for (const account of target.accounts ?? []) {
       account[metric].remaining = null
       account.exhausted_429 = true
+    }
+  } else if (state === 'partial' || state === 'partial-zero') {
+    const accounts = target.accounts ?? []
+    for (const metric of ['tokens', 'requests'] as const) {
+      target[metric].remaining = null
+      for (const [index, account] of accounts.entries()) {
+        account[metric].remaining =
+          index === 0 ? null : state === 'partial-zero' ? 0 : account[metric].remaining
+      }
     }
   } else if (state === 'unknown') {
     target.tokens.remaining = null
