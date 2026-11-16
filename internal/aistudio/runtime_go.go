@@ -54,6 +54,7 @@ type goWAARuntime struct {
 	pageURL        string
 	headers        http.Header
 	cacheDirectory string
+	bootstrapMode  BootstrapMode
 
 	storageMu sync.Mutex
 	storage   StorageState
@@ -89,8 +90,9 @@ func NewGoWorker(ctx context.Context, accountID string, options camoufoxnative.O
 		return nil, err
 	}
 	return &NativeWorker{
-		accountID: accountID,
-		runtime:   runtime,
+		accountID:     accountID,
+		runtime:       runtime,
+		bootstrapMode: runtime.bootstrapMode,
 		state: WorkerState{
 			AccountID: accountID,
 			Phase:     WorkerReady,
@@ -121,6 +123,12 @@ func newGoWAARuntime(ctx context.Context, options camoufoxnative.Options) (*goWA
 	if err != nil {
 		return nil, err
 	}
+	started := false
+	defer func() {
+		if !started {
+			client.CloseIdleConnections()
+		}
+	}()
 	runtime := &goWAARuntime{options: options, client: client, storage: storage}
 	runtime.profile, runtime.userAgent, runtime.acceptLanguage = profileFromFingerprint(fingerprint)
 	runtime.pageURL = aiStudioOrigin + "/prompts/new_chat?model=" + url.QueryEscape(options.Model)
@@ -142,7 +150,7 @@ func newGoWAARuntime(ctx context.Context, options camoufoxnative.Options) (*goWA
 	}
 	runtime.cacheDirectory = filepath.Join(filepath.Dir(filepath.Dir(options.StorageStatePath)), ".waa-interpreters")
 	reportGoStartup(options, camoufoxnative.StartupLoadingAIStudio)
-	apiKey, err := runtime.loadPage(ctx)
+	apiKey, err := runtime.bootstrapAPIKey(ctx, NewProxyHTTPClient)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +191,7 @@ func newGoWAARuntime(ctx context.Context, options camoufoxnative.Options) (*goWA
 	}
 	runtime.vm = vm
 	runtime.scheduleRefresh()
+	started = true
 	return runtime, nil
 }
 
@@ -276,7 +285,7 @@ func (runtime *goWAARuntime) mergeResponseCookies(response *http.Response, reque
 	runtime.storageMu.Lock()
 	defer runtime.storageMu.Unlock()
 	if err := runtime.storage.MergeSetCookieHeaders(headers, requestURL, time.Now()); err != nil {
-		slog.Warn("WAA 纯 Go Cookie 写回失败", "url", requestURL, "error", err)
+		slog.Warn("WAA 纯 Go Cookie 写回失败")
 	}
 }
 
@@ -311,8 +320,9 @@ func (runtime *goWAARuntime) do(ctx context.Context, method string, target strin
 	return response, nil
 }
 
-// loadPage 以浏览器导航形状请求官网页面并返回页面公开 API Key
-func (runtime *goWAARuntime) loadPage(ctx context.Context) (string, error) {
+// loadPage reports the page restriction without treating it as expired credentials.
+func (runtime *goWAARuntime) loadPage(ctx context.Context) (pageLoadResult, error) {
+	unknown := pageLoadResult{access: WebAccessUnknown}
 	headers := http.Header{}
 	headers.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	headers.Set("Upgrade-Insecure-Requests", "1")
@@ -325,34 +335,37 @@ func (runtime *goWAARuntime) loadPage(ctx context.Context) (string, error) {
 	for redirect := 0; redirect < 5; redirect++ {
 		response, err := runtime.do(ctx, http.MethodGet, target, nil, headers)
 		if err != nil {
-			return "", fmt.Errorf("载入 AI Studio 页面: %w", err)
+			return unknown, safeBootstrapFailure("page_navigation", err)
 		}
 		body, readErr := io.ReadAll(response.Body)
 		_ = response.Body.Close()
 		if readErr != nil {
-			return "", fmt.Errorf("读取 AI Studio 页面: %w", readErr)
+			return unknown, safeBootstrapFailure("page_read", readErr)
 		}
 		if response.StatusCode >= 300 && response.StatusCode < 400 {
 			location, err := response.Location()
 			if err != nil {
-				return "", fmt.Errorf("AI Studio 页面跳转无效: %w", err)
+				return unknown, errors.New("AI Studio 页面跳转无效")
 			}
-			if location.Hostname() == "accounts.google.com" {
-				return "", fmt.Errorf("%w url=%s", camoufoxnative.ErrAuthenticationRequired, location.String())
+			if isServiceRestrictedLocation(location) {
+				return pageLoadResult{access: WebAccessRestricted}, nil
+			}
+			if strings.EqualFold(location.Hostname(), "accounts.google.com") {
+				return unknown, fmt.Errorf("AI Studio 页面要求登录: %w", camoufoxnative.ErrAuthenticationRequired)
 			}
 			target = location.String()
 			continue
 		}
 		if response.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("AI Studio 页面返回 HTTP %d", response.StatusCode)
+			return unknown, fmt.Errorf("AI Studio 页面返回 HTTP %d", response.StatusCode)
 		}
 		match := makerSuiteAPIKeyPattern.FindSubmatch(body)
 		if len(match) != 2 || len(match[1]) == 0 {
-			return "", fmt.Errorf("AI Studio 页面缺少 WIu0Nc")
+			return unknown, errors.New("AI Studio 页面缺少 WIu0Nc")
 		}
-		return string(match[1]), nil
+		return pageLoadResult{access: WebAccessNormal, apiKey: string(match[1])}, nil
 	}
-	return "", errors.New("AI Studio 页面跳转次数过多")
+	return unknown, errors.New("AI Studio 页面跳转次数过多")
 }
 
 // rpcHeaders 返回官网页面 grpc-web 请求的公共头
@@ -384,19 +397,19 @@ func (runtime *goWAARuntime) loggingContextHeader(ctx context.Context, apiKey st
 	}
 	response, err := runtime.do(ctx, http.MethodPost, loggingContextURL, []byte("[]"), headers)
 	if err != nil {
-		return "", fmt.Errorf("读取官网日志上下文: %w", err)
+		return "", safeBootstrapFailure("logging_context_transport", err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return "", err
-	}
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GetLoggingContext 返回 HTTP %d", response.StatusCode)
+		return "", bootstrapRPCError("GetLoggingContext", response.StatusCode, body)
+	}
+	if err != nil {
+		return "", safeBootstrapFailure("logging_context_read", err)
 	}
 	encoded, err := encodeJSPBFields(body)
 	if err != nil {
-		return "", fmt.Errorf("编码官网日志上下文: %w", err)
+		return "", safeBootstrapFailure("logging_context_parse", err)
 	}
 	return base64.StdEncoding.EncodeToString(encoded), nil
 }
@@ -461,17 +474,21 @@ func (runtime *goWAARuntime) createChallenge(ctx context.Context, refresh []stri
 	}
 	response, err := runtime.do(ctx, http.MethodPost, waaCreateURL, body, headers)
 	if err != nil {
-		return waa.Challenge{}, fmt.Errorf("调用 Waa/Create: %w", err)
+		return waa.Challenge{}, safeBootstrapFailure("waa_create_transport", err)
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(response.Body)
-	if err != nil {
-		return waa.Challenge{}, err
-	}
 	if response.StatusCode != http.StatusOK {
-		return waa.Challenge{}, fmt.Errorf("Waa/Create 返回 HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(raw)))
+		return waa.Challenge{}, bootstrapRPCError("Waa/Create", response.StatusCode, raw)
 	}
-	return waa.ParseChallenge(raw)
+	if err != nil {
+		return waa.Challenge{}, safeBootstrapFailure("waa_create_read", err)
+	}
+	challenge, err := waa.ParseChallenge(raw)
+	if err != nil {
+		return waa.Challenge{}, safeBootstrapFailure("waa_create_parse", err)
+	}
+	return challenge, nil
 }
 
 // loadInterpreter 按 challenge 指定的 hash 读取缓存或下载解释器并校验摘要

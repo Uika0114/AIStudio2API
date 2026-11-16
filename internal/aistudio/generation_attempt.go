@@ -23,6 +23,7 @@ type GenerationAttempt struct {
 	AccountID         string            `json:"account_id"`
 	Method            string            `json:"method"`
 	Mode              string            `json:"mode"`
+	BootstrapMode     BootstrapMode     `json:"bootstrap_mode,omitempty"`
 	Reason            string            `json:"reason,omitempty"`
 	Stage             string            `json:"stage"`
 	Sent              bool              `json:"sent"`

@@ -101,6 +101,20 @@ func (attempt *physicalAttempt) update(change func(*GenerationAttempt)) {
 	reportGenerationAttempt(attempt.ctx, snapshot)
 }
 
+// observeWorkerBootstrapMode binds evidence to the worker actually preparing this
+// attempt. Account-level observations must never relabel an older request.
+func observeWorkerBootstrapMode(ctx context.Context, mode BootstrapMode) {
+	if mode != BootstrapLegacy && mode != BootstrapRestrictedFallback {
+		return
+	}
+	attempt, _ := ctx.Value(physicalAttemptKey{}).(*physicalAttempt)
+	attempt.update(func(value *GenerationAttempt) {
+		if value.BootstrapMode == "" {
+			value.BootstrapMode = mode
+		}
+	})
+}
+
 // Mark immediately before the native send. This is an attempted send, not proof
 // that Google executed or billed it. Receiving headers is tracked separately.
 func markPhysicalSend(ctx context.Context, headers ...http.Header) {

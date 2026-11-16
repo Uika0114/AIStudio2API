@@ -184,6 +184,7 @@ type RequestAttempt struct {
 	AccountID         string                 `json:"account_id,omitempty"`
 	Method            string                 `json:"method,omitempty"`
 	Mode              string                 `json:"mode,omitempty"`
+	BootstrapMode     aistudio.BootstrapMode `json:"bootstrap_mode,omitempty"`
 	Reason            string                 `json:"reason,omitempty"`
 	Stage             string                 `json:"stage"`
 	Sent              *bool                  `json:"sent"`

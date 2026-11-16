@@ -13,11 +13,12 @@ import (
 
 // NativeWorker 将单个账户的 Camoufox 或纯 Go WAA runtime 适配为受保护请求 preparer
 type NativeWorker struct {
-	accountID   string
-	runtime     workerRuntime
-	operationMu sync.Mutex
-	stateMu     sync.RWMutex
-	state       WorkerState
+	accountID     string
+	bootstrapMode BootstrapMode
+	runtime       workerRuntime
+	operationMu   sync.Mutex
+	stateMu       sync.RWMutex
+	state         WorkerState
 }
 
 var _ ProtectedPreparer = (*NativeWorker)(nil)
@@ -48,6 +49,7 @@ func NewNativeWorker(ctx context.Context, accountID string, options camoufoxnati
 
 // Prepare 生成 fresh proof 并写入请求指定的 WAA field
 func (worker *NativeWorker) Prepare(ctx context.Context, request ProtectedRequest) (PreparedProtectedRequest, error) {
+	observeWorkerBootstrapMode(ctx, worker.bootstrapMode)
 	start, end, err := arrayElementSpan(request.Body, request.ProofField-1)
 	if err != nil {
 		return PreparedProtectedRequest{}, fmt.Errorf("受保护请求缺少 WAA field %d: %w", request.ProofField, err)

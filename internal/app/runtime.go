@@ -217,6 +217,8 @@ type accountWorker struct {
 	busyUntil      time.Time
 	busyDelay      time.Duration
 	busyErr        error
+	webAccess      aistudio.WebAccessObservation
+	webAccessToken uint64
 }
 
 type accountWorkerPreparer struct {
@@ -710,6 +712,8 @@ func (update *accountWorkerUpdate) Commit() {
 	update.account.mu.Lock()
 	update.account.config = update.config
 	update.account.label = update.label
+	update.account.webAccessToken++
+	update.account.webAccess = aistudio.WebAccessObservation{}
 	update.account.mu.Unlock()
 	update.pending = false
 	update.account.startupMu.Unlock()
@@ -1101,7 +1105,9 @@ func (manager *accountWorkerManager) startReservedWorker(
 		step, message := workerStartupProgress(stage)
 		manager.requests.log(label, "INFO", fmt.Sprintf("WAA Worker 启动 | %d/7 | %s", step, message))
 	}
+	initCtx, finishObservation := manager.observeWorkerPage(initCtx, account)
 	worker, initErr := newWAAWorker(initCtx, account.id, options)
+	finishObservation()
 	cancel()
 	manager.startup.release()
 	if initErr != nil {

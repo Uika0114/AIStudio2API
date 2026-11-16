@@ -375,7 +375,8 @@ func AddAccessLogGenerationAttempt(ctx context.Context, attempt aistudio.Generat
 		RequestID: attempt.RequestID, ParentID: attempt.ParentID, RequestedModel: attempt.RequestedModel, BaseModel: attempt.BaseModel,
 		RequestedChannel: &channel, AntiTruncation: cloneLedgerValue(&attempt.AntiTruncation), AccountID: attempt.AccountID,
 		Method: attempt.Method, Mode: attempt.Mode, Reason: attempt.Reason, Stage: attempt.Stage,
-		Sent: cloneLedgerValue(&attempt.Sent), ResponseReceived: cloneLedgerValue(&attempt.ResponseReceived), StatusCode: attempt.StatusCode,
+		BootstrapMode: attempt.BootstrapMode,
+		Sent:          cloneLedgerValue(&attempt.Sent), ResponseReceived: cloneLedgerValue(&attempt.ResponseReceived), StatusCode: attempt.StatusCode,
 		Usage: cloneLedgerValue(attempt.Usage), UsageSource: attemptUsageSource(attempt.Usage, attempt.UsageSource),
 		OutputTiming: cloneLedgerValue(attempt.OutputTiming),
 	}
@@ -405,6 +406,9 @@ func AddAccessLogGenerationAttempt(ctx context.Context, attempt aistudio.Generat
 		}
 		if value.StatusCode == 0 {
 			value.StatusCode = previous.StatusCode
+		}
+		if previous.BootstrapMode != "" {
+			value.BootstrapMode = previous.BootstrapMode
 		}
 		value.StartedAt = previous.StartedAt
 		if value.StartedAt == nil && !attempt.StartedAt.IsZero() {
