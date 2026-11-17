@@ -177,11 +177,54 @@ func encodeFunctionDeclaration(declaration FunctionDeclaration) ([]any, error) {
 			return nil, fmt.Errorf("parameters: %w", err)
 		}
 	}
-	if encodingError != nil || schemaWireNeedsBuild(parameters) || declaration.Strict || strings.Contains(string(raw), `"additionalProperties"`) || strings.Contains(string(raw), `"prefixItems"`) || strings.Contains(string(raw), `"exclusiveMinimum"`) || strings.Contains(string(raw), `"propertyNames"`) {
+	carrierChanged := relaxToolSchemaEmptyEnums(parameters)
+	if encodingError != nil || carrierChanged || schemaWireNeedsBuild(parameters) || declaration.Strict || strings.Contains(string(raw), `"additionalProperties"`) || strings.Contains(string(raw), `"prefixItems"`) || strings.Contains(string(raw), `"exclusiveMinimum"`) || strings.Contains(string(raw), `"propertyNames"`) {
 		description += "\nArguments must follow this JSON Schema: " + string(raw)
 	}
 	projectToolSchema(parameters)
 	return []any{declaration.Name, description, parameters}, nil
+}
+
+// relaxToolSchemaEmptyEnums 只放宽本次工具载体；原始契约由说明与 strict 校验保留。
+func relaxToolSchemaEmptyEnums(wire []any) bool {
+	changed := false
+	if len(wire) > 4 && wire[4] != nil {
+		for _, value := range wire[4].([]string) {
+			if value == "" {
+				wire[4] = nil
+				changed = true
+				break
+			}
+		}
+	}
+	if len(wire) > 5 && wire[5] != nil {
+		changed = relaxToolSchemaEmptyEnums(wire[5].([]any)) || changed
+	}
+	if len(wire) > 6 && wire[6] != nil {
+		for _, entry := range wire[6].([]any) {
+			changed = relaxToolSchemaEmptyEnums(entry.([]any)[1].([]any)) || changed
+		}
+	}
+	for _, index := range []int{16, 17, 18} {
+		if len(wire) <= index || wire[index] == nil {
+			continue
+		}
+		variantsChanged := false
+		for _, variant := range wire[index].([]any) {
+			variantsChanged = relaxToolSchemaEmptyEnums(variant.([]any)) || variantsChanged
+		}
+		// oneOf 的分支放宽后可能重叠，须移除整个排他约束而非新增拒绝。
+		if index == 16 && variantsChanged {
+			wire[index] = nil
+		}
+		changed = variantsChanged || changed
+	}
+	if len(wire) > 19 && wire[19] != nil && relaxToolSchemaEmptyEnums(wire[19].([]any)) {
+		// 否定内放宽会收紧外层，因此将整个 not 留给原始契约。
+		wire[19] = nil
+		changed = true
+	}
+	return changed
 }
 
 // toolSchemaShape 提取工具参数的层级与类型供 Playground 编码

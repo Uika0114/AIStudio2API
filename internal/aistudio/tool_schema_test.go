@@ -1,6 +1,7 @@
 package aistudio
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -280,6 +281,193 @@ func TestToolSchemaWireNameCollision(t *testing.T) {
 			after, _ := json.Marshal(tools)
 			if string(before) != string(after) {
 				t.Fatal("原始工具声明发生变化")
+			}
+		})
+	}
+}
+
+func TestToolSchemaEmptyEnumsCarrier(t *testing.T) {
+	for _, test := range []struct {
+		name, schema string
+		dropped      int
+	}{
+		{"inspect view", `{"type":"object","properties":{"view":{"type":["string","null"],"enum":["models","",null]}}}`, -1},
+		{"subagent mode", `{"type":"object","properties":{"mode":{"type":["string","null"],"enum":["steer","queue","",null]}}}`, -1},
+		{"subagent thinking", `{"type":"object","properties":{"thinking":{"type":["string","null"],"enum":["off","minimal","low","medium","high","xhigh","max","",null]}}}`, -1},
+		{"empty only", `{"type":"string","enum":[""]}`, 4},
+		{"null only", `{"type":["string","null"],"enum":[null]}`, 4},
+		{"empty and null", `{"type":["string","null"],"enum":["",null]}`, 4},
+		{"empty const", `{"const":""}`, 4},
+		{"not shorthand", `{"type":"string","not":""}`, 19},
+		{"not schema", `{"type":"string","not":{"type":"string","enum":[""]}}`, 19},
+		{"not const", `{"type":"string","not":{"const":""}}`, 19},
+		{"nested not", `{"type":"string","not":{"not":{"enum":[""]}}}`, 19},
+		{"array items", `{"type":"array","items":{"type":"string","enum":["ok",""]}}`, -1},
+		{"anyOf", `{"anyOf":[{"type":"string","enum":[""]},{"type":"integer"}]}`, -1},
+		{"allOf", `{"allOf":[{"type":"string","enum":["ok",""]},{"type":"string","maxLength":9}]}`, -1},
+		{"oneOf overlap", `{"oneOf":[{"type":"string","enum":[""]},{"type":"string","enum":["ok"]}]}`, 16},
+		{"existing shape fallback", `{"type":"object","properties":{"value":{"const":""}},"$defs":{"unused":{"type":"string"}}}`, -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			declaration := FunctionDeclaration{Name: "pick", Description: "Original description", Parameters: json.RawMessage(test.schema)}
+			before, _ := json.Marshal(declaration)
+			wire, err := encodeFunctionDeclaration(declaration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, _ := json.Marshal(declaration)
+			if string(after) != string(before) {
+				t.Fatal("original declaration changed")
+			}
+			normalized, err := normalizeFunctionParameters(declaration.Parameters)
+			if err != nil || !strings.Contains(wire[1].(string), "Original description\nArguments must follow this JSON Schema: "+string(normalized)) {
+				t.Fatalf("original contract missing from description: %#v, %v", wire, err)
+			}
+			parameters := wire[2].([]any)
+			assertToolSchemaNoEmptyEnums(t, parameters)
+			if test.dropped >= 0 && len(parameters) > test.dropped && parameters[test.dropped] != nil {
+				t.Fatalf("incompatible carrier constraint survived: %#v", parameters)
+			}
+		})
+	}
+}
+
+func assertToolSchemaNoEmptyEnums(t *testing.T, wire []any) {
+	t.Helper()
+	if len(wire) > 4 && wire[4] != nil {
+		for _, value := range wire[4].([]string) {
+			if value == "" {
+				t.Fatalf("empty enum in tool carrier: %#v", wire)
+			}
+		}
+	}
+	for _, index := range []int{5, 19} {
+		if len(wire) > index && wire[index] != nil {
+			assertToolSchemaNoEmptyEnums(t, wire[index].([]any))
+		}
+	}
+	if len(wire) > 6 && wire[6] != nil {
+		for _, entry := range wire[6].([]any) {
+			assertToolSchemaNoEmptyEnums(t, entry.([]any)[1].([]any))
+		}
+	}
+	for _, index := range []int{16, 17, 18} {
+		if len(wire) > index && wire[index] != nil {
+			for _, variant := range wire[index].([]any) {
+				assertToolSchemaNoEmptyEnums(t, variant.([]any))
+			}
+		}
+	}
+}
+
+func TestToolSchemaNonemptyEnumsUnchanged(t *testing.T) {
+	raw := json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["steer","queue"],"description":"","example":""},"other":{"type":"string","not":{"enum":["denied"]}}}}`)
+	expected, err := encodeJSONSchema(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectToolSchema(expected)
+	wire, err := encodeFunctionDeclaration(FunctionDeclaration{Name: "pick", Description: "unchanged", Parameters: raw})
+	if err != nil || wire[1] != "unchanged" || !reflect.DeepEqual(wire[2], expected) {
+		t.Fatalf("ordinary schema changed: %#v, %v", wire, err)
+	}
+}
+
+func TestToolSchemaEmptyEnumsOutputAndBuildUnchanged(t *testing.T) {
+	raw := json.RawMessage(`{"type":"string","enum":["models","",null]}`)
+	response, err := encodeResponseSchema(raw)
+	expected := []any{int64(1), nil, nil, nil, []string{"models", "", ""}}
+	if err != nil || !reflect.DeepEqual(response, expected) {
+		t.Fatalf("structured output baseline changed: %#v, %v", response, err)
+	}
+	before, _ := json.Marshal(buildResponseSchema(response))
+	declaration := FunctionDeclaration{Name: "inspect", Parameters: raw}
+	if _, err := encodeFunctionDeclaration(declaration); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := json.Marshal(buildResponseSchema(response))
+	if string(after) != string(before) {
+		t.Fatal("tool encoding mutated response wire")
+	}
+	build, _, err := encodeBuildTools(Tools{Functions: []FunctionDeclaration{declaration}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	function := build[0].(map[string]any)["functionDeclarations"].([]any)[0].(map[string]any)
+	normalized, _ := normalizeFunctionParameters(raw)
+	if string(function["parametersJsonSchema"].(json.RawMessage)) != string(normalized) {
+		t.Fatalf("Build original schema changed: %#v", function)
+	}
+}
+
+func TestToolSchemaEmptyEnumsRequestEntrypoints(t *testing.T) {
+	declaration := FunctionDeclaration{Name: "inspect", Parameters: json.RawMessage(`{"type":"object","properties":{"view":{"type":["string","null"],"enum":["models","",null]}}}`)}
+	expected, err := encodeFunctionDeclaration(declaration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertToolSchemaNoEmptyEnums(t, expected[2].([]any))
+	tools := Tools{Functions: []FunctionDeclaration{declaration}}
+	contents := []Content{{Role: RoleUser, Parts: []Part{{Text: "fixture"}}}}
+	generate, err := EncodeGenerateContentRequest(GenerateRequest{Model: "fixture", Contents: contents, Tools: tools}, GenerationDefaults{MaxOutputTokens: 32}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := EncodeCountTokensRequest(TokenCountRequest{Model: "fixture", Contents: contents, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bidi, _, err := EncodeBidiSetupRequest(BidiRequest{Model: "fixture", Mode: BidiModeRobotics, Tools: tools.Functions}, RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(expected)
+	for name, raw := range map[string][]byte{"generate": generate, "count": count, "bidi": bidi} {
+		if !strings.Contains(string(raw), string(encoded)) {
+			t.Fatalf("%s does not use the tool carrier: %s", name, raw)
+		}
+	}
+}
+
+func TestToolSchemaEmptyEnumsStrictContract(t *testing.T) {
+	raw := json.RawMessage(`{"type":"object","properties":{"view":{"type":["string","null"],"enum":["models","",null]}},"required":["view"]}`)
+	for _, mode := range []string{"strict", "validated"} {
+		t.Run(mode, func(t *testing.T) {
+			declaration := FunctionDeclaration{Name: "inspect", Parameters: raw, Strict: mode == "strict"}
+			config := ToolConfig{}
+			if mode == "validated" {
+				config.Mode = mode
+			}
+			request, contract, err := prepareToolRequest(GenerateRequest{Tools: Tools{Functions: []FunctionDeclaration{declaration}, ToolConfig: config}})
+			if err != nil || contract == nil || contract.schemas["inspect"] == nil {
+				t.Fatalf("original schema was not compiled: %v", err)
+			}
+			if _, _, err := encodeRequestedTools(request.Tools); err != nil {
+				t.Fatal(err)
+			}
+			for _, test := range []struct {
+				args string
+				ok   bool
+			}{
+				{`{"view":"models"}`, true},
+				{`{"view":""}`, true},
+				{`{"view":null}`, true},
+				{`{"view":"not-allowed"}`, false},
+				{`{"view":42}`, false},
+			} {
+				source := make(chan Event, 1)
+				source <- Event{Kind: EventToolCall, ToolCall: &FunctionCall{Name: "inspect", Arguments: json.RawMessage(test.args)}}
+				close(source)
+				var received []Event
+				for event := range contract.forward(context.Background(), source) {
+					received = append(received, event)
+				}
+				if len(received) != 1 || test.ok && received[0].Kind != EventToolCall || !test.ok && received[0].Kind != EventError {
+					t.Fatalf("original contract lost for %s: %+v", test.args, received)
+				}
+			}
+			if string(request.Tools.Functions[0].Parameters) != string(raw) {
+				t.Fatal("original strict input changed")
 			}
 		})
 	}
