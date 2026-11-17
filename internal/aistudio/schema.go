@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -690,12 +692,145 @@ func normalizeFunctionParameters(raw json.RawMessage) (json.RawMessage, error) {
 	return cleaned, err
 }
 
+// responseSchemaAliases 只作用于响应 Schema 的规则词，不参与工具参数或自由 JSON 的处理。
+var responseSchemaAliases = map[string]string{
+	"any_of": "anyOf", "one_of": "oneOf", "all_of": "allOf",
+	"min_items": "minItems", "max_items": "maxItems",
+	"min_length": "minLength", "max_length": "maxLength",
+	"min_properties": "minProperties", "max_properties": "maxProperties",
+	"property_ordering": "propertyOrdering", "additional_properties": "additionalProperties",
+	"prefix_items": "prefixItems", "property_names": "propertyNames", "exclusive_minimum": "exclusiveMinimum",
+}
+
+// normalizeResponseSchema 在合法 Schema 位置处理别名。comparison 仅用于双写比较副本中的计数字段，
+// 不把调用方的单字段值、业务名称或 enum/const/default/example 数据改写为新的契约。
+func normalizeResponseSchema(raw json.RawMessage, comparison bool) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return raw, nil // boolean、null 和 not 简写等仍交既有 canonical 解析器处理。
+	}
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return nil, err
+	}
+	for name, value := range schema {
+		canonical := name
+		if alias, ok := responseSchemaAliases[name]; ok {
+			canonical = alias
+		}
+		normalized, err := normalizeResponseSchemaField(canonical, value, comparison)
+		if err != nil {
+			return nil, fmt.Errorf("schema.%s: %w", name, err)
+		}
+		schema[name] = normalized
+	}
+	for alias, canonical := range responseSchemaAliases {
+		value, exists := schema[alias]
+		if !exists {
+			continue
+		}
+		if current, exists := schema[canonical]; exists {
+			equal, err := equalResponseSchemaValues(canonical, current, value)
+			if err != nil {
+				return nil, err
+			}
+			if !equal {
+				return nil, fmt.Errorf("schema.%s conflicts with %s", alias, canonical)
+			}
+		} else {
+			schema[canonical] = value
+		}
+		delete(schema, alias)
+	}
+	return json.Marshal(schema)
+}
+
+func normalizeResponseSchemaField(name string, raw json.RawMessage, comparison bool) (json.RawMessage, error) {
+	switch name {
+	case "minItems", "maxItems", "minLength", "maxLength", "minProperties", "maxProperties":
+		if comparison {
+			return responseSchemaIntegerComparison(raw), nil
+		}
+	case "properties", "$defs", "definitions":
+		var entries map[string]json.RawMessage
+		if json.Unmarshal(raw, &entries) != nil || entries == nil {
+			return raw, nil // 不新增容器形状校验，保留原 canonical 错误／回退边界。
+		}
+		for key, value := range entries {
+			normalized, err := normalizeResponseSchema(value, comparison)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", key, err)
+			}
+			entries[key] = normalized
+		}
+		return json.Marshal(entries)
+	case "items", "not", "additionalProperties", "propertyNames":
+		return normalizeResponseSchema(raw, comparison)
+	case "anyOf", "oneOf", "allOf", "prefixItems":
+		var variants []json.RawMessage
+		if json.Unmarshal(raw, &variants) != nil {
+			return raw, nil
+		}
+		for index, value := range variants {
+			normalized, err := normalizeResponseSchema(value, comparison)
+			if err != nil {
+				return nil, fmt.Errorf("[%d]: %w", index, err)
+			}
+			variants[index] = normalized
+		}
+		return json.Marshal(variants)
+	}
+	return raw, nil
+}
+
+// responseSchemaIntegerComparison 复用既有整数转换，但不把它的浮点舍入／下溢当作双写同值证据。
+// 仅比较副本走精确核对，单字段编码及共享工具清理保持原行为。
+func responseSchemaIntegerComparison(raw json.RawMessage) json.RawMessage {
+	canonical := canonicalSchemaInteger(raw)
+	if bytes.Equal(canonical, raw) {
+		return raw
+	}
+	value := string(bytes.TrimSpace(raw))
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		value = text
+	}
+	if _, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return canonical
+	}
+	number, ok := new(big.Rat).SetString(value)
+	if ok && number.IsInt() && number.Num().String() == string(canonical) {
+		return canonical
+	}
+	return raw
+}
+
+func equalResponseSchemaValues(name string, left, right json.RawMessage) (bool, error) {
+	var values [2]any
+	for index, raw := range []json.RawMessage{left, right} {
+		comparison, err := normalizeResponseSchemaField(name, raw, true)
+		if err != nil {
+			return false, err
+		}
+		decoder := json.NewDecoder(bytes.NewReader(comparison))
+		decoder.UseNumber()
+		if err := decoder.Decode(&values[index]); err != nil {
+			return false, err
+		}
+	}
+	return reflect.DeepEqual(values[0], values[1]), nil
+}
+
 // responseSchemaNote 为附加在结构化输出根说明中的完整 Schema 前缀
 const responseSchemaNote = "The response must follow this JSON Schema: "
 
 // encodeResponseSchema 编码结构化输出 Schema；无法直接表达的 Schema 按层级与类型编码并在根说明附完整 Schema
 func encodeResponseSchema(raw json.RawMessage) ([]any, error) {
-	wire, err := encodeJSONSchema(raw)
+	normalized, err := normalizeResponseSchema(raw, false)
+	if err != nil {
+		return nil, err // 冲突不是不可表达的载体，不能交给 shape 丢弃约束。
+	}
+	wire, err := encodeJSONSchema(normalized)
 	if err == nil {
 		return wire, nil
 	}
@@ -703,7 +838,7 @@ func encodeResponseSchema(raw json.RawMessage) ([]any, error) {
 		return nil, err
 	}
 	var schema any
-	if json.Unmarshal(raw, &schema) != nil {
+	if json.Unmarshal(normalized, &schema) != nil {
 		return nil, err
 	}
 	if _, ok := schema.(map[string]any); !ok {
@@ -747,12 +882,15 @@ func projectPlaygroundResponseSchema(wire []any, raw json.RawMessage) []any {
 }
 
 // RequestNeedsBuildSchema 判断结构化输出 Schema 是否含 Playground 需要补齐类型的开放节点
-func RequestNeedsBuildSchema(request GenerateRequest) bool {
+func RequestNeedsBuildSchema(request GenerateRequest) (bool, error) {
 	if len(request.Config.ResponseSchema) == 0 {
-		return false
+		return false, nil
 	}
 	wire, err := encodeResponseSchema(request.Config.ResponseSchema)
-	return err == nil && schemaWireNeedsBuild(wire)
+	if err != nil {
+		return false, fmt.Errorf("%w: response schema: %v", ErrInvalidArgument, err)
+	}
+	return schemaWireNeedsBuild(wire), nil
 }
 
 // schemaWireNeedsBuild 查找 Playground 不接受的无类型节点

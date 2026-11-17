@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -662,5 +663,80 @@ func TestCrossChannelOpaqueStateRejected(t *testing.T) {
 	}
 	if err := crossChannelOpaqueStateError(previous, aistudio.ModelSelection{BaseModel: "m"}); err != nil {
 		t.Fatalf("auto continuation should not be blocked: %v", err)
+	}
+}
+
+const mappedResponseSchema = `{"any_of":[{"type":"OBJECT","properties":{"any_of":{"type":"STRING","min_length":1}},"required":["any_of"],"property_ordering":["any_of"]},{"type":"OBJECT","properties":{"source_fact_ids":{"type":"ARRAY","min_items":1,"items":{"type":"STRING"}}}},{"type":"OBJECT"}],"default":{"min_items":"data"},"example":{"any_of":"data"}}`
+
+func assertMappedResponseSchema(t *testing.T, request aistudio.GenerateRequest, expected string) {
+	t.Helper()
+	before := string(request.Config.ResponseSchema)
+	var values [2]any
+	for index, raw := range []string{before, expected} {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&values[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(values[0], values[1]) {
+		t.Fatalf("opaque schema/priority changed: %s != %s", before, expected)
+	}
+	if needs, err := aistudio.RequestNeedsBuildSchema(request); err != nil || needs {
+		t.Fatalf("mapped response still needs Build: %v, %v", needs, err)
+	}
+	if _, err := aistudio.GenerationAccountSelection(request, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := aistudio.EncodeGenerateContentRequest(request, aistudio.GenerationDefaults{MaxOutputTokens: 32}, aistudio.RequestContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []any
+	if err := json.Unmarshal(encoded, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent[3].([]any)[8].([]any)[0] != float64(6) || string(request.Config.ResponseSchema) != before {
+		t.Fatalf("real encoding lost OBJECT or mutated input: %s", encoded)
+	}
+}
+
+func TestGeminiResponseSchemaIngress(t *testing.T) {
+	for _, test := range []struct{ name, config, expected string }{
+		{"responseSchema", `"responseSchema":` + mappedResponseSchema, mappedResponseSchema},
+		{"response_schema", `"response_schema":` + mappedResponseSchema, mappedResponseSchema},
+		{"responseJsonSchema", `"responseJsonSchema":` + mappedResponseSchema, mappedResponseSchema},
+		{"response_json_schema", `"response_json_schema":` + mappedResponseSchema, mappedResponseSchema},
+		{"json wins", `"responseSchema":{"min_items":1,"minItems":2},"responseJsonSchema":` + mappedResponseSchema, mappedResponseSchema},
+		{"null json wins", `"responseSchema":` + mappedResponseSchema + `,"responseJsonSchema":null`, `null`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeService{models: []aistudio.Model{routingTestModel()}}
+			response := doJSON(t, newRoutingTestHandler(t, service), http.MethodPost,
+				"/v1beta/models/playground/gemini-4-argon:generateContent",
+				`{"contents":[{"role":"user","parts":[{"text":"fixture"}]}],"generation_config":{`+test.config+`}}`)
+			if response.Code != http.StatusOK {
+				t.Fatal(response.Code, response.Body.String())
+			}
+			assertMappedResponseSchema(t, service.lastGenerate(t), test.expected)
+		})
+	}
+}
+
+func TestResponseSchemaOtherProtocolIngress(t *testing.T) {
+	for _, test := range []struct{ name, path, body string }{
+		{"chat", "/v1/chat/completions", `{"model":"playground/gemini-4-argon","messages":[{"role":"user","content":"fixture"}],"response_format":{"type":"json_schema","json_schema":{"name":"fixture","schema":` + mappedResponseSchema + `}}}`},
+		{"responses", "/v1/responses", `{"model":"playground/gemini-4-argon","input":"fixture","text":{"format":{"type":"json_schema","name":"fixture","schema":` + mappedResponseSchema + `}}}`},
+		{"anthropic", "/v1/messages", `{"model":"gemini-4-argon","max_tokens":32,"messages":[{"role":"user","content":"fixture"}],"output_config":{"format":{"type":"json_schema","schema":` + mappedResponseSchema + `}}}`},
+		{"interaction", "/v1beta/interactions", `{"model":"gemini-4-argon","input":"fixture","response_format":{"type":"text","schema":` + mappedResponseSchema + `}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeService{models: []aistudio.Model{routingTestModel()}}
+			response := doJSON(t, newRoutingTestHandler(t, service), http.MethodPost, test.path, test.body)
+			if response.Code != http.StatusOK {
+				t.Fatal(response.Code, response.Body.String())
+			}
+			assertMappedResponseSchema(t, service.lastGenerate(t), mappedResponseSchema)
+		})
 	}
 }

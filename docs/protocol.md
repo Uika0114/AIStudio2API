@@ -834,7 +834,13 @@ Playground 的函数参数载体和结构化输出 Schema 使用以下 protobuf 
 | `maxItems` | 21 | `minItems` | 22 |
 | `propertyOrdering` | 23 | | |
 
-结构化输出 Schema 归一化规则：
+响应 Schema 在类型／Build 前置判定、Playground 实际编码及 Build 投影之前，统一识别以下有限规则名别名：`any_of/one_of/all_of` → `anyOf/oneOf/allOf`，`min_items/max_items/min_length/max_length/min_properties/max_properties` → 对应 camelCase，`property_ordering/additional_properties/prefix_items/property_names/exclusive_minimum` → `propertyOrdering/additionalProperties/prefixItems/propertyNames/exclusiveMinimum`。别名只恢复下表的既有 canonical 行为，不代表新增全部 JSON Schema 约束的原生强制执行。
+
+仅在 Schema 对象、`properties` 的子 Schema、`items/not/additionalProperties/propertyNames`、组合与 `prefixItems` 分支及定义容器的定义值中处理规则词；属性名、required／排序引用、定义名、`$ref`、未知扩展块和 enum／const／default／example 数据不改。boolean、null 与 `not` 字符串简写仍按原规则处理。调用方原始 RawMessage 不变；有损回退的说明继续附原输入。
+
+同层别名与 canonical 双写先归一化对应子 Schema，再按 JSON 结构比较：对象键序无关、数组顺序保留，同值保留 canonical，不同值返回参数错误，冲突不能进入 shape 回退。单别名 null／双 null 沿用 canonical 清理；null 与非 null 冲突。六个 min/max Items／Length／Properties 计数字段仅在比较副本中使用既有整数转换并精确核对没有舍入／下溢，因此 `1/1.0/1e0/"1"` 可合并；其他数字按精确表示比较，不做逻辑等价推导，两个不同的大 int64 不会因 float64 舍入而合并。响应 Schema 编码错误在账户获取前按 `ErrInvalidArgument` 返回，不以 bool 判定吞错；真正开放／混合节点的显式 Playground 请求仍拒绝，不暗转 Build，auto／Build／Assistant 原政策保留。函数参数不使用这套响应专属别名规则。
+
+结构化输出 Schema 其余归一化规则：
 
 | 输入结构 | 编码结果 |
 | --- | --- |
@@ -1918,7 +1924,7 @@ SSE 使用相同的事件名与 JSON `event_type`：`interaction.created` → `s
 }
 ```
 
-请求体各层消息字段同时接受 proto 字段名与 lowerCamelCase 名，例如 `system_instruction`、`generation_config.response_mime_type`、`tools[].function_declarations`、`tool_config.function_calling_config` 和 `function_call`；同一层两种写法并存时使用驼峰字段。`functionCall.args`、`functionResponse.response`、`parameters`、`parametersJsonSchema`、`responseSchema`、`responseJsonSchema` 与 `partMetadata` 的取值按原样使用，其中的键名不转换。
+请求体各层消息字段同时接受 proto 字段名与 lowerCamelCase 名，例如 `system_instruction`、`generation_config.response_mime_type`、`tools[].function_declarations`、`tool_config.function_calling_config` 和 `function_call`；同一层两种写法并存时使用驼峰字段。`functionCall.args`、`functionResponse.response`、`parameters`、`parametersJsonSchema`、`responseSchema`、`responseJsonSchema` 与 `partMetadata` 在该外层转换中保持 opaque，不递归改自由 JSON 的键。响应 Schema 进入专属解析器后，仅按前述有限规则表归一化合法 Schema 位置；工具参数、业务属性和数据值不套用此规则。`responseSchema/response_schema` 与 `responseJsonSchema/response_json_schema` 汇入同一内部响应字段；两入口同时提供时仍以 `responseJsonSchema` 为准，包括显式 null，不更改既有优先级。
 
 Content 字段为 `role` 与 `parts`。Part oneof：
 

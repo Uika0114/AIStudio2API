@@ -3466,8 +3466,15 @@ func (service *trackedService) generateWithRetry(
 			break
 		}
 		selection.AccountID, selection.ResourceID = selectionAccountID, selectionResourceID
-		if !selection.StrictChannel && !selection.PlaygroundOnly && service.pool.BuildEnabled() && aistudio.RequestNeedsBuildSchema(request) {
-			selection.Channel = aistudio.ChannelBuild
+		if !selection.StrictChannel && !selection.PlaygroundOnly && service.pool.BuildEnabled() {
+			needsBuild, schemaErr := aistudio.RequestNeedsBuildSchema(request)
+			if schemaErr != nil {
+				err = schemaErr
+				break
+			}
+			if needsBuild {
+				selection.Channel = aistudio.ChannelBuild
+			}
 		}
 		fallbackReason := ""
 		if request.Unary {

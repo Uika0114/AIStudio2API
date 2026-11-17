@@ -669,6 +669,9 @@ func (s *PooledService) ValidateGenerateRequest(request GenerateRequest) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
+	if _, err := RequestNeedsBuildSchema(request); err != nil {
+		return err
+	}
 	// Cached PG entries cannot reject a strict Build request. Validate capabilities
 	// against the actual leased channel entry immediately before generation.
 	if request.Selection.Strict() {
@@ -712,8 +715,14 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 	if err != nil {
 		return nil, err
 	}
-	if !selection.StrictChannel && (RequestNeedsBuildSchema(request) || request.Unary && s.BuildNativeNonstream) {
-		selection.PreferredChannel = ChannelBuild
+	if !selection.StrictChannel {
+		needsBuild, err := RequestNeedsBuildSchema(request)
+		if err != nil {
+			return nil, err
+		}
+		if needsBuild || request.Unary && s.BuildNativeNonstream {
+			selection.PreferredChannel = ChannelBuild
+		}
 	}
 	pinned := selection.AccountID != "" || selection.ResourceID != ""
 	if _, ok := AccountLeaseFromContext(ctx); ok {
