@@ -526,3 +526,87 @@ func TestRemoteRecoveryControlNativeCompletionRequiresExactCommittedOperation(t 
 		})
 	}
 }
+
+func TestNativeRecoveryHandoffRejectsUnprovenSuccessor(t *testing.T) {
+	for _, mode := range []string{"missing-retirement", "duplicate-retirement", "different-epoch", "keep-current", "cookie-gap", "material-gap", "no-revision-gap", "retired-ack-id", "other-ack", "prior-commit", "automatic"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newRecoveryControlFixture(t)
+			ctx := t.Context()
+			if err := ReserveRemoteRecoveryAuth(ctx, f.path, f.r, recoveryFixtureID1, false, f.now); err != nil {
+				t.Fatal(err)
+			}
+			state, err := LoadStorageState(f.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Cookies = append(state.Cookies,
+				StateCookie{Name: "__Secure-1PAPISID", Value: "fixture", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+				StateCookie{Name: "__Secure-3PAPISID", Value: "fixture", Domain: ".google.com", Path: "/", Expires: -1, Secure: true})
+			meta, _ := state.Session()
+			r := meta.Remote
+			old := SessionOperation{ID: recoveryFixtureID1, Reason: "reauth", Epoch: r.Epoch, BaseCookie: r.CookieRevision, BaseMaterial: r.MaterialVersion, StateRevision: meta.Revision, Deadline: f.now.Add(time.Minute).Unix()}
+			r.RetiredOperations = []SessionOperation{old}
+			r.CookieRevision++
+			r.Ack = &SessionAck{ID: recoveryFixtureID2, Epoch: r.Epoch, Cookie: r.CookieRevision, Material: r.MaterialVersion}
+			want := "IDENTITY_MISMATCH"
+			switch mode {
+			case "missing-retirement":
+				r.RetiredOperations = nil
+			case "duplicate-retirement":
+				r.RetiredOperations = append(r.RetiredOperations, old)
+			case "different-epoch":
+				r.RetiredOperations[0].Epoch++
+			case "keep-current":
+				r.Ack.Mode = "keep_current"
+			case "cookie-gap":
+				r.CookieRevision++
+				r.Ack.Cookie++
+			case "material-gap":
+				r.MaterialVersion += 2
+				r.Ack.Material += 2
+			case "no-revision-gap":
+				r.RetiredOperations[0].StateRevision += 2
+			case "retired-ack-id":
+				other := old
+				other.ID = r.Ack.ID
+				r.RetiredOperations = append(r.RetiredOperations, other)
+			case "other-ack", "prior-commit":
+				control, err := loadRemoteRecoveryControl(f.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "other-ack" {
+					control.Ack = &remoteRecoveryAck{ID: recoveryFixtureID3}
+					want = "ACK_REQUIRED"
+				} else {
+					control.Round.Pending = remoteRecoveryRetry{Used: 1, Queries: 1, Commits: 1}
+				}
+				if err := saveRemoteRecoveryControl(ctx, f.path, control); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := state.SetSession(meta); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				if err := WriteManagedSessionState(ctx, f.path, &state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(remoteRecoveryPath(f.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "automatic" {
+				err = CompleteRemoteRecoveryAuth(ctx, f.path, r, f.now.Add(time.Hour))
+			} else {
+				err = CompleteNativeRemoteRecoveryAuth(ctx, f.path, state)
+			}
+			recoveryRequireCode(t, err, want)
+			after, err := os.ReadFile(remoteRecoveryPath(f.path))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("rejected handoff changed durable control", err)
+			}
+		})
+	}
+}

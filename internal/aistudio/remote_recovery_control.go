@@ -402,6 +402,60 @@ func completeRemoteRecoveryAuth(ctx context.Context, path string, r *RemoteSessi
 	return saveRemoteRecoveryControl(ctx, path, c)
 }
 
+// nativeRetiredReauth identifies an exact prior intent in the current binding's
+// durable retirement history. A keep_current disposition also retains the raw
+// intent, but advances the control versions; callers must check that base.
+func nativeRetiredReauth(c *remoteRecoveryControl, meta *SessionState) *SessionOperation {
+	if c.Round.Pending.Commits != 0 {
+		return nil
+	}
+	var found *SessionOperation
+	for i := range meta.Remote.RetiredOperations {
+		op := &meta.Remote.RetiredOperations[i]
+		if op.ID != c.Round.Current {
+			continue
+		}
+		if found != nil || !validOperation(op) || op.Reason != "reauth" || op.Epoch != meta.Remote.Epoch ||
+			op.StateRevision == 0 || op.StateRevision >= meta.Revision || op.Stage != "" ||
+			op.ResultCookie != 0 || op.ResultMaterial != 0 || op.Failure != "" || op.HTTP != nil || op.AckMode != "" {
+			return nil
+		}
+		found = op
+	}
+	return found
+}
+
+// CheckNativeRemoteReauth permits a new explicit reauth against an existing
+// same-binding round only after the old intent was durably retired. It neither
+// reserves nor reopens automatic recovery. The native caller holds the lease
+// and passes the session it just read from disk.
+func CheckNativeRemoteReauth(path string, meta *SessionState) error {
+	if meta == nil || meta.Remote == nil {
+		return SessionError("INVALID_SESSION_STATE")
+	}
+	r := meta.Remote
+	if r.Pending != nil || r.Ack != nil || r.EnrollmentRequired || !r.RecoveryRequired {
+		return SessionError("RECOVERY_BUDGET_REQUIRED")
+	}
+	c, err := remoteRecoveryFor(path, r)
+	if IsSessionFailureCode(err, "RECOVERY_BUDGET_REQUIRED") || IsSessionFailureCode(err, "RECOVERY_BINDING_MISMATCH") {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if c.Ack != nil {
+		return SessionError("ACK_REQUIRED")
+	}
+	if c.Round != nil {
+		old := nativeRetiredReauth(c, meta)
+		if old == nil || old.BaseCookie != r.CookieRevision || old.BaseMaterial != r.MaterialVersion {
+			return SessionError("RECOVERY_BUDGET_REQUIRED")
+		}
+	}
+	return nil
+}
+
 // CompleteNativeRemoteRecoveryAuth closes only the budget for an explicitly
 // requested native projection commit. It does not publish pool readiness or
 // stand in for consumer runtime adoption. The caller holds the account lease.
@@ -431,10 +485,41 @@ func CompleteNativeRemoteRecoveryAuth(ctx context.Context, path string, state St
 	if err != nil {
 		return err
 	}
+	r := meta.Remote
 	if c.Round == nil {
+		if c.Ack != nil && (r.Ack == nil || c.Ack.ID != r.Ack.ID) {
+			return SessionError("ACK_REQUIRED")
+		}
 		return nil
 	}
-	return completeRemoteRecoveryAuth(ctx, path, meta.Remote, c)
+	if r.Ack == nil || r.Ack.ID == c.Round.Current {
+		return completeRemoteRecoveryAuth(ctx, path, r, c)
+	}
+	// An already committed native successor may be acknowledged even if its
+	// old automatic round was never marked retired in the control file. The
+	// proof is the exact durable raw intent plus the adjacent committed
+	// projection, not an expired deadline or merely an ACK with another ID.
+	if c.Ack != nil {
+		return SessionError("ACK_REQUIRED")
+	}
+	// The old intent, its retirement, the new intent and its commit are four
+	// distinct durable revisions; unrelated writes can widen, not shrink, the gap.
+	old := nativeRetiredReauth(c, meta)
+	if old == nil || r.Pending != nil || r.RecoveryRequired || r.EnrollmentRequired || r.Ack.Mode != "" ||
+		meta.Revision-old.StateRevision < 3 || r.CookieRevision == 0 || r.CookieRevision-1 != old.BaseCookie ||
+		r.MaterialVersion < old.BaseMaterial || r.MaterialVersion-old.BaseMaterial > 1 {
+		return SessionError("IDENTITY_MISMATCH")
+	}
+	for _, retired := range r.RetiredOperations {
+		if retired.ID == r.Ack.ID {
+			return SessionError("IDENTITY_MISMATCH")
+		}
+	}
+	// Close the old round and stage only the exact new ACK, atomically. No
+	// retry budget is minted and the session/history stays untouched here.
+	c.Round = nil
+	c.Ack = &remoteRecoveryAck{ID: r.Ack.ID}
+	return saveRemoteRecoveryControl(ctx, path, c)
 }
 
 // The caller invokes the first ACK only as part of successful adoption. Other

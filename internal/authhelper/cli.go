@@ -304,6 +304,11 @@ func reconcileProjection(ctx context.Context, client *Client, path string, keepC
 		} else if meta.Remote.EnrollmentRequired {
 			reason = "bootstrap"
 		}
+		if meta.Remote.Pending == nil && reason == "reauth" {
+			if err := aistudio.CheckNativeRemoteReauth(path, meta); err != nil {
+				return err
+			}
+		}
 		ctx = aistudio.WithRemoteAuthBudget(ctx)
 		if err = client.PrepareRecovery(ctx, &state, path, reason, func(id string) error { return aistudio.TakeRemoteAuthBudget(ctx, id) }); err != nil {
 			return err
