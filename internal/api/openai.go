@@ -203,7 +203,6 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	generateRequest.Unary = !request.Stream
-	s.thoughtSignatures.Restore(generateRequest.Contents, generateRequest.Selection)
 	count := 1
 	if request.N != nil {
 		count = int(*request.N)
@@ -219,7 +218,7 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	created := time.Now().Unix()
 	if request.Stream {
-		s.streamChatCompletion(w, r, request, requestID, created, choices, generateRequest.Selection)
+		streamChatCompletion(w, r, request, requestID, created, choices)
 		return
 	}
 	results, err := choices.run(func(_ int, events <-chan aistudio.Event) (generationResult, error) {
@@ -231,9 +230,6 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIRequestError(w, err)
 		}
 		return
-	}
-	for index := range results {
-		s.thoughtSignatures.Remember(results[index].toolCalls, generateRequest.Selection, results[index].channel, results[index].providerModel)
 	}
 	choices.record(r.Context(), results)
 	writeJSON(w, http.StatusOK, buildChatCompletion(requestID, created, request.Model, results, request.Tools))
@@ -927,7 +923,7 @@ func chatCompletionChoice(index int, result generationResult, tools []openAITool
 	return choice
 }
 
-func (s *server) streamChatCompletion(w http.ResponseWriter, r *http.Request, request chatRequest, id string, created int64, choices *chatChoices, selection aistudio.ModelSelection) {
+func streamChatCompletion(w http.ResponseWriter, r *http.Request, request chatRequest, id string, created int64, choices *chatChoices) {
 	if err := streamHeaders(w); err != nil {
 		return
 	}
@@ -948,7 +944,7 @@ func (s *server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 		return writeSSEHeartbeat(w)
 	}
 	results, err := choices.run(func(index int, events <-chan aistudio.Event) (generationResult, error) {
-		choice := &chatStreamChoice{server: s, tools: request.Tools, selection: selection, index: index, write: write}
+		choice := &chatStreamChoice{tools: request.Tools, index: index, write: write}
 		result, err := consumeStreamEvents(choices.ctx, events, choice.emit, heartbeat)
 		if err != nil {
 			return result, err
@@ -997,9 +993,7 @@ func (s *server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 
 // chatStreamChoice 把一个 choice 的事件写成带 index 的 Chat chunk
 type chatStreamChoice struct {
-	server                 *server
 	tools                  []openAITool
-	selection              aistudio.ModelSelection
 	index                  int
 	write                  func(int, map[string]any, *string) error
 	toolIndex              int
@@ -1021,7 +1015,6 @@ func (choice *chatStreamChoice) emit(event aistudio.Event) error {
 			return nil
 		}
 		call := event.ToolCall
-		choice.server.thoughtSignatures.Remember([]aistudio.FunctionCall{*call}, choice.selection, event.Channel, event.ProviderModel)
 		if legacyFunctionTools(choice.tools) {
 			return choice.write(choice.index, map[string]any{"function_call": legacyFunctionCall(*call)}, nil)
 		}

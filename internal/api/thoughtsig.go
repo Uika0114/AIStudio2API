@@ -201,6 +201,8 @@ func (store *thoughtSignatureStore) RestoreChecked(contents []aistudio.Content, 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	base, channel := strings.TrimSpace(selection.BaseModel), string(selection.Channel)
+	strict := selection.Strict()
+	matchesRoute := func(origin thoughtSignatureOrigin) bool { return origin.base == base && origin.channel == channel }
 	portableTools := selection.Channel == aistudio.ChannelPlayground || selection.Channel == aistudio.ChannelBuild
 	for _, content := range contents {
 		for i := range content.Parts {
@@ -218,47 +220,55 @@ func (store *thoughtSignatureStore) RestoreChecked(contents []aistudio.Content, 
 			}
 			signature := part.ThoughtSignature
 			if call != nil && call.ThoughtSignature != "" {
-				if selection.Strict() && signature != "" && signature != call.ThoughtSignature {
+				if strict && signature != "" && signature != call.ThoughtSignature {
 					return opaqueHistoryError("conflicting signatures")
 				}
 				signature = call.ThoughtSignature
 			}
-			// Unknown input signatures are not reused directly. Drop only that
-			// opaque value; the existing routed cache still gets first chance below.
-			if portableTools && call != nil && signature != "" &&
-				len(store.origins[sha256.Sum256([]byte(signature))]) == 0 {
-				part.ThoughtSignature, call.ThoughtSignature, signature = "", "", ""
-			}
-			restoredFromRoute := false
+
+			var cached string
+			unknownCall := false
 			if call != nil && call.ID != "" {
 				key := thoughtSignatureKey(*call)
-				if !selection.Strict() && store.strictCallOriginLocked(key) {
-					return opaqueHistoryError("strict-origin tool history cannot become auto")
-				}
-				if signature == "" {
-					if selection.Strict() {
-						signature = store.routed[routedThoughtSignatureKey(base, channel, key)]
-						restoredFromRoute = portableTools && signature != ""
-						if signature == "" && store.knownCallOriginLocked(key) {
+				if strict {
+					cached = store.routed[routedThoughtSignatureKey(base, channel, key)]
+					if cached == "" && (portableTools || signature == "") {
+						// A known foreign call is a conflict even if another call
+						// registered the same opaque value on the target route.
+						if store.knownCallOriginLocked(key) {
 							return opaqueHistoryError("tool call belongs to another model/channel")
 						}
-					} else {
-						signature = store.legacy[key]
+						unknownCall = true
 					}
-					if signature != "" {
-						call.ThoughtSignature = signature
+				} else {
+					if store.strictCallOriginLocked(key) {
+						return opaqueHistoryError("strict-origin tool history cannot become auto")
 					}
+					cached = store.legacy[key]
 				}
 			}
-			if signature == "" {
-				continue
+
+			var origins []thoughtSignatureOrigin
+			if signature != "" {
+				origins = store.origins[sha256.Sum256([]byte(signature))]
+				if portableTools && call != nil && (len(origins) == 0 || (unknownCall && !slices.ContainsFunc(origins, matchesRoute))) {
+					// A foreign digest alone does not identify an untracked call.
+					// Drop only the opaque value; keep the tool history intact.
+					part.ThoughtSignature, call.ThoughtSignature, signature = "", "", ""
+				}
 			}
-			origins := store.origins[sha256.Sum256([]byte(signature))]
-			if selection.Strict() {
-				match := slices.ContainsFunc(origins, func(origin thoughtSignatureOrigin) bool { return origin.base == base && origin.channel == channel })
+			restored := signature == ""
+			if restored {
+				if cached == "" {
+					continue
+				}
+				call.ThoughtSignature = cached
+				origins = store.origins[sha256.Sum256([]byte(cached))]
+			}
+			if strict {
 				// The routed key retains exact call/model/channel provenance even
 				// if its separate origin entry was evicted. Known mismatches still fail.
-				if !match && !(restoredFromRoute && len(origins) == 0) {
+				if !slices.ContainsFunc(origins, matchesRoute) && !(portableTools && restored && len(origins) == 0) {
 					return opaqueHistoryError("unknown or incompatible provenance")
 				}
 			} else if slices.ContainsFunc(origins, func(origin thoughtSignatureOrigin) bool { return origin.strict }) {

@@ -604,7 +604,7 @@ Part 文本带 `part[12]=true` 时属于 reasoning summary，普通文本属于�
 | Anthropic | `thinking` 或 `redacted_thinking` block 的 `signature` | thinking block 的 `signature` |
 | Gemini | 数据 Part 或独立 Part 的 `thoughtSignature` | Part 的 `thoughtSignature` |
 
-OpenAI Chat 的 assistant tool call 未带 `extra_content` 时，服务按调用 ID、函数名和参数补回本进程最近签发的签名；查不到时写入 `skip_thought_signature_validator`。
+OpenAI Chat 的 assistant tool call 未带签名时，服务按调用 ID、函数名和参数查找本进程缓存；裸名保留旧缓存兼容。显式 Playground/Build 按[可移植工具历史与签名来源](portable-tool-history.md)判定：拒绝已知来源冲突，允许可移植历史按既有编码写入 `skip_thought_signature_validator`。
 
 Anthropic redacted thinking block 以 `data` 承载同一份不透明状态；适配器在输入与输出两侧保留该值。流式响应不输出文本之后到达的签名。
 

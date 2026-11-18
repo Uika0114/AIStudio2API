@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -68,6 +69,186 @@ func TestSkipValidatorToolHistoryAcrossProtocols(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestChatSharedSignatureAfterRestart(t *testing.T) {
+	const carbon, argon = "gemini-4-carbon", "gemini-4-argon"
+	for _, channel := range []aistudio.Channel{aistudio.ChannelPlayground, aistudio.ChannelBuild} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", channel, stream), func(t *testing.T) {
+				carbonModel := aistudio.Model{ID: carbon, BaseModel: carbon}
+				service := &fakeService{models: []aistudio.Model{routingTestModel(), carbonModel}}
+				// A fresh handler remembers only the first post-restart response.
+				handler := newRoutingTestHandler(t, service)
+				known := aistudio.FunctionCall{ID: "call-carbon", Name: "lookup", Arguments: json.RawMessage(`{"value":1}`), ThoughtSignature: sharedToolSignatureFixture}
+				primeChatToolSignature(t, handler, service, "playground/"+carbon, aistudio.ChannelPlayground, carbon, known, stream)
+				model := string(channel) + "/" + argon
+				t.Run("unknown_history", func(t *testing.T) {
+					old := known
+					old.ID = "call-argon-old"
+					setChatHistoryEvents(service, toolLoopEvents(channel, true))
+					resp := doJSON(t, handler, http.MethodPost, "/v1/chat/completions", chatToolHistoryBody(model, stream, 1, old))
+					if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), "final answer") || (stream && !strings.Contains(resp.Body.String(), "data: [DONE]")) || service.generateCount() != 2 {
+						t.Fatalf("unknown tool history did not reach generation exactly once: %d %s", resp.Code, resp.Body.String())
+					}
+					req := service.lastGenerate(t)
+					if req.Selection.Channel != channel || req.Selection.RequestedModel != model || req.Unary == stream {
+						t.Fatalf("route or mode changed: %+v, unary=%t", req.Selection, req.Unary)
+					}
+					part := req.Contents[1].Parts[0]
+					if call := part.FunctionCall; call == nil || call.ID != old.ID || call.Name != old.Name || string(call.Arguments) != string(old.Arguments) || call.ThoughtSignature != "" || part.ThoughtSignature != "" {
+						t.Fatalf("tool history changed beyond its signature: %+v / %+v", part.FunctionCall, part)
+					}
+					if result := req.Contents[2].Parts[0].FunctionResult; result == nil || result.ID != old.ID || !strings.Contains(string(result.Content), "done") {
+						t.Fatalf("tool result linkage lost: %+v", result)
+					}
+					assertPortableChatToolWire(t, req, old.ID)
+				})
+				t.Run("known_foreign_call_even_if_digest_matches", func(t *testing.T) {
+					local := known
+					local.ID = "call-argon-new"
+					primeChatToolSignature(t, handler, service, model, channel, argon, local, stream)
+					before := service.generateCount()
+					resp := doJSON(t, handler, http.MethodPost, "/v1/chat/completions", chatToolHistoryBody(model, stream, 1, known))
+					if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "tool call belongs to another model/channel") || service.generateCount() != before {
+						t.Fatalf("known foreign tool history was not blocked before Generate: %d %s", resp.Code, resp.Body.String())
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestChatRestoresSignaturesThroughSharedBoundary(t *testing.T) {
+	const base = "gemini-4-carbon"
+	const alias = "gemini-4-carbon-fixture-alias"
+	const channel = aistudio.ChannelPlayground
+	for _, stream := range []bool{false, true} {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/strict=%t", stream, strict), func(t *testing.T) {
+				catalog := aistudio.Model{ID: base, BaseModel: base, CapabilityOptions: map[string][]string{"aliases": {alias}}}
+				service := &fakeService{models: []aistudio.Model{catalog, routingTestModel()}}
+				s := &server{service: service, thoughtSignatures: newThoughtSignatureStore()}
+				handler := http.HandlerFunc(s.handleChatCompletions)
+				model, followUp := base, base
+				if strict {
+					model, followUp = "playground/"+base, "playground/"+alias
+				}
+				call := aistudio.FunctionCall{ID: "call-cached", Name: "lookup", Arguments: json.RawMessage(`{"value":1}`), ThoughtSignature: "fixture-cached-signature"}
+				primeChatToolSignature(t, handler, service, model, channel, base, call, stream)
+
+				store := s.thoughtSignatures
+				store.mu.Lock()
+				legacySize, legacySignature := len(store.legacy), store.legacy[thoughtSignatureKey(call)]
+				store.mu.Unlock()
+				if strict && legacySize != 0 || !strict && legacySignature != call.ThoughtSignature {
+					t.Fatalf("legacy contents do not match route policy: size=%d, signature=%q", legacySize, legacySignature)
+				}
+
+				input := call
+				input.ThoughtSignature = ""
+				final := toolLoopEvents(channel, true)
+				for i := range final {
+					final[i].ProviderModel = base
+				}
+				setChatHistoryEvents(service, final)
+				if strict {
+					for _, other := range []string{"playground/gemini-4-argon", base} {
+						blocked := doJSON(t, handler, http.MethodPost, "/v1/chat/completions", chatToolHistoryBody(other, stream, 1, input))
+						if blocked.Code != http.StatusBadRequest || service.generateCount() != 1 {
+							t.Fatalf("omitted strict signature crossed to %s: %d %s", other, blocked.Code, blocked.Body.String())
+						}
+					}
+				}
+				resp := doJSON(t, handler, http.MethodPost, "/v1/chat/completions", chatToolHistoryBody(followUp, stream, 2, input))
+				if resp.Code != http.StatusOK || strings.Count(resp.Body.String(), "final answer") != 2 || (stream && !strings.Contains(resp.Body.String(), "data: [DONE]")) {
+					t.Fatalf("two-choice history replay did not finish: %d %s", resp.Code, resp.Body.String())
+				}
+				service.mu.Lock()
+				defer service.mu.Unlock()
+				if len(service.generateReqs) != 3 {
+					t.Fatalf("want one initial and two follow-up requests, got %d", len(service.generateReqs))
+				}
+				a, b := service.generateReqs[1], service.generateReqs[2]
+				left, right := a.Contents[1].Parts[0].FunctionCall, b.Contents[1].Parts[0].FunctionCall
+				if left == nil || right == nil || a.ID == b.ID || left == right || len(left.Arguments) == 0 || len(right.Arguments) == 0 || &left.Arguments[0] == &right.Arguments[0] {
+					t.Fatal("choice tool history must not share mutable inputs")
+				}
+				for _, req := range []aistudio.GenerateRequest{a, b} {
+					got := req.Contents[1].Parts[0].FunctionCall
+					if req.Selection.BaseModel != base || req.Selection.RequestedModel != followUp || req.Selection.Strict() != strict || got.ThoughtSignature != call.ThoughtSignature || got.ID != call.ID || got.Name != call.Name || string(got.Arguments) != string(call.Arguments) {
+						t.Fatalf("choice lost canonical route or tool history: %+v / %+v", req.Selection, got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func chatToolHistoryBody(model string, stream bool, choices int, call aistudio.FunctionCall) string {
+	return fmt.Sprintf(`{"model":%q,"stream":%t,"n":%d,"messages":[{"role":"user","content":"use lookup"},{"role":"assistant","tool_calls":[{"id":%q,"type":"function","function":{"name":%q,"arguments":%q},"extra_content":{"google":{"thought_signature":%q}}}]},{"role":"tool","tool_call_id":%q,"content":"done"}]}`, model, stream, choices, call.ID, call.Name, string(call.Arguments), call.ThoughtSignature, call.ID)
+}
+
+func setChatHistoryEvents(service *fakeService, events []aistudio.Event) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	service.generateEvents = events
+}
+
+func primeChatToolSignature(t *testing.T, handler http.Handler, service *fakeService, requested string, channel aistudio.Channel, provider string, call aistudio.FunctionCall, stream bool) {
+	t.Helper()
+	events := toolLoopEvents(channel, false)
+	events[0].ToolCall, events[0].ThoughtSignature = &call, call.ThoughtSignature
+	for i := range events {
+		events[i].ProviderModel = provider
+	}
+	setChatHistoryEvents(service, events)
+	resp := doJSON(t, handler, http.MethodPost, "/v1/chat/completions", fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"use lookup"}]}`, requested, stream))
+	body := resp.Body.String()
+	if resp.Code != http.StatusOK || !strings.Contains(body, call.ID) || !strings.Contains(body, `"thought_signature":`+fmt.Sprintf("%q", call.ThoughtSignature)) || !strings.Contains(body, `"finish_reason":"tool_calls"`) || (stream && !strings.Contains(body, "data: [DONE]")) {
+		t.Fatalf("expected projected tool event with signature: %d %s", resp.Code, body)
+	}
+}
+
+func assertPortableChatToolWire(t *testing.T, request aistudio.GenerateRequest, callID string) {
+	t.Helper()
+	const marker = "skip_thought_signature_validator"
+	defaults := aistudio.GenerationDefaults{MaxOutputTokens: 32}
+	if request.Selection.Channel == aistudio.ChannelPlayground {
+		body, err := aistudio.EncodeGenerateContentRequest(request, defaults, aistudio.RequestContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire []any
+		if err := json.Unmarshal(body, &wire); err != nil {
+			t.Fatal(err)
+		}
+		part := wire[1].([]any)[1].([]any)[0].([]any)[0].([]any)
+		if len(part) <= 14 || part[14] != marker {
+			t.Fatalf("wrong Playground signature: %s", body)
+		}
+		wantCall := fmt.Sprintf(`["lookup",[[["value",[null,1]]]],%q]`, callID)
+		gotCall, err := json.Marshal(part[10])
+		if err != nil || string(gotCall) != wantCall {
+			t.Fatalf("wrong Playground tool call: %s", body)
+		}
+		return
+	}
+	_, body, err := aistudio.EncodeBuildGenerateRequest(request, defaults, false, request.Unary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Contents []struct{ Parts []map[string]json.RawMessage }
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	part := wire.Contents[1].Parts[0]
+	wantCall := fmt.Sprintf(`{"args":{"value":1},"id":%q,"name":"lookup"}`, callID)
+	if string(part["thoughtSignature"]) != `"`+marker+`"` || string(part["functionCall"]) != wantCall {
+		t.Fatalf("wrong Build tool call/signature: %s", body)
 	}
 }
 

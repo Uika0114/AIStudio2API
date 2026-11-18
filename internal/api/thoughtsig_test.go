@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -304,6 +305,64 @@ func TestThoughtSignatureRestoreCheckedProvenance(t *testing.T) {
 			if (err != nil) != tc.wantError || call.ThoughtSignature != tc.want {
 				t.Fatalf("restore = %q, %v; want %q, error=%t", call.ThoughtSignature, err, tc.want, tc.wantError)
 			}
+		})
+	}
+}
+
+const sharedToolSignatureFixture = "fixture-opaque-value-shared-by-tools"
+
+func TestThoughtSignatureSharedValueRequiresCallProvenance(t *testing.T) {
+	foreign := aistudio.ModelSelection{BaseModel: "gemini-4-carbon", Channel: aistudio.ChannelPlayground}
+	for _, tc := range []struct {
+		name   string
+		target aistudio.ModelSelection
+	}{
+		{"cross_model", aistudio.ModelSelection{BaseModel: "gemini-4-argon", Channel: aistudio.ChannelPlayground}},
+		{"cross_channel", aistudio.ModelSelection{BaseModel: "gemini-4-carbon", Channel: aistudio.ChannelBuild}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A new process has seen a different call with the same opaque value.
+			store := newThoughtSignatureStore()
+			known := aistudio.FunctionCall{ID: "call-known", Name: "lookup", Arguments: json.RawMessage(`{"value":1}`), ThoughtSignature: sharedToolSignatureFixture}
+			store.Remember([]aistudio.FunctionCall{known}, foreign, foreign.Channel, foreign.BaseModel)
+			for _, field := range []string{"call", "part"} {
+				t.Run("unknown_history/"+field, func(t *testing.T) {
+					// ID alone is not provenance: only the complete tool call matches.
+					history := known
+					history.Arguments = json.RawMessage(`{"value":2}`)
+					part := aistudio.Part{FunctionCall: &history}
+					if field == "part" {
+						part.ThoughtSignature, history.ThoughtSignature = history.ThoughtSignature, ""
+					}
+					contents := []aistudio.Content{{Parts: []aistudio.Part{part}}}
+					if err := store.RestoreChecked(contents, tc.target); err != nil {
+						t.Fatalf("unknown call with a shared value was rejected: %v", err)
+					}
+					if history.ID != known.ID || history.Name != known.Name || string(history.Arguments) != `{"value":2}` || history.ThoughtSignature != "" || contents[0].Parts[0].ThoughtSignature != "" {
+						t.Fatalf("history should lose only the opaque value: %+v", contents[0].Parts[0])
+					}
+				})
+			}
+			t.Run("no_id_stays_conservative", func(t *testing.T) {
+				history := known
+				history.ID = ""
+				contents := []aistudio.Content{{Parts: []aistudio.Part{{FunctionCall: &history}}}}
+				if err := store.RestoreChecked(contents, tc.target); !errors.Is(err, aistudio.ErrInvalidArgument) {
+					t.Fatalf("id-less foreign signature should fail: %v", err)
+				}
+			})
+			t.Run("known_foreign_call_even_if_digest_matches", func(t *testing.T) {
+				local := known
+				local.ID = "call-local"
+				store.Remember([]aistudio.FunctionCall{local}, tc.target, tc.target.Channel, tc.target.BaseModel)
+				// Canonical JSON argument normalization still matches the foreign call.
+				history := known
+				history.Arguments = json.RawMessage(`{ "value": 1 }`)
+				contents := []aistudio.Content{{Parts: []aistudio.Part{{FunctionCall: &history}}}}
+				if err := store.RestoreChecked(contents, tc.target); !errors.Is(err, aistudio.ErrInvalidArgument) || !strings.Contains(err.Error(), "tool call belongs to another model/channel") {
+					t.Fatalf("shared value must not override the known foreign call: %v", err)
+				}
+			})
 		})
 	}
 }
