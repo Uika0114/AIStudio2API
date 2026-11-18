@@ -9,7 +9,7 @@ import {
   ProgressRoot,
 } from 'reka-ui'
 import { useI18n } from '@/i18n'
-import type { QuotaBalance, QuotaEstimateReport } from '@/types'
+import type { QuotaAccountEstimate, QuotaBalance, QuotaEstimateReport } from '@/types'
 import UiIcon from '../UiIcon.vue'
 
 const props = withDefaults(
@@ -48,7 +48,17 @@ const accounts = computed(() => props.report?.accounts ?? [])
 function valid(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
-type DisplayBalance = QuotaBalance & { unknownAccounts?: number }
+type DisplayBalance = QuotaBalance & { unknownAccounts?: number; limitedUnknownAccounts?: number }
+function limitedUnknown(account: QuotaAccountEstimate, metric: 'tokens' | 'requests'): boolean {
+  return (
+    account.included === true &&
+    account.exhausted_429 === true &&
+    account[metric].remaining === null
+  )
+}
+function displayRemaining(account: QuotaAccountEstimate, metric: 'tokens' | 'requests'): number | null {
+  return limitedUnknown(account, metric) ? 0 : account[metric].remaining
+}
 function displayBalance(
   balance: QuotaBalance | undefined,
   metric: 'tokens' | 'requests',
@@ -60,6 +70,7 @@ function displayBalance(
   let remaining = 0
   let known = 0
   let unknown = 0
+  let limitedUnknownAccounts = 0
   for (const account of members) {
     const value = account[metric]
     if (!valid(value.limit)) return balance
@@ -68,18 +79,27 @@ function displayBalance(
       remaining += value.remaining
       known++
     } else if (value.remaining === null) {
-      unknown++
+      if (limitedUnknown(account, metric)) limitedUnknownAccounts++
+      else unknown++
     } else {
       return balance
     }
   }
-  if (!known || !unknown || limit !== balance.limit) return balance
-  return { ...balance, remaining, unknownAccounts: unknown }
+  if (
+    (!known && !limitedUnknownAccounts) ||
+    (!unknown && !limitedUnknownAccounts) ||
+    limit !== balance.limit
+  )
+    return balance
+  return { ...balance, remaining, unknownAccounts: unknown, limitedUnknownAccounts }
 }
 function balanceLabel(balance: DisplayBalance | undefined, tokens: boolean): string {
-  const label = balance?.unknownAccounts ? t('quota.known') : t('quota.remaining')
-  const value = `${label} ${number(balance?.remaining, tokens)} / ${number(balance?.limit, tokens)}`
-  return balance?.unknownAccounts ? `${value}, ${percent(balance)}` : value
+  const labels = [
+    `${t('quota.remaining')} ${number(balance?.remaining, tokens)} / ${number(balance?.limit, tokens)}`,
+  ]
+  if (balance?.unknownAccounts) labels.push(percent(balance))
+  if (balance?.limitedUnknownAccounts) labels.push(t('quota.limitedUnknownZero'))
+  return labels.join(', ')
 }
 function ratio(balance: QuotaBalance | undefined): number | undefined {
   if (!balance || !valid(balance.limit) || balance.limit === 0 || !valid(balance.remaining))
@@ -125,6 +145,7 @@ function percent(balance: DisplayBalance | undefined): string {
             :aria-label="`${modelLabel} ${metric.label}`"
             :aria-valuetext="balanceLabel(metric.balance, metric.key === 'tokens')"
             :data-quota-partial="metric.balance?.unknownAccounts ? 'true' : undefined"
+            :data-quota-assumed-zero="metric.balance?.limitedUnknownAccounts || undefined"
             class="relative h-8 w-full overflow-hidden rounded-md bg-raised"
             :class="{ 'quota-unknown': ratio(metric.balance) === undefined }"
           >
@@ -143,7 +164,6 @@ function percent(balance: DisplayBalance | undefined): string {
                 <span class="shrink-0">{{ modelLabel }}</span>
                 <span class="shrink-0">{{ metric.label }}</span>
                 <span
-                  ><span v-if="metric.balance?.unknownAccounts" class="mr-1">{{ t('quota.known') }}</span
                   ><span class="font-semibold">{{
                     number(metric.balance?.remaining, metric.key === 'tokens')
                   }}</span
@@ -210,9 +230,15 @@ function percent(balance: DisplayBalance | undefined): string {
                 <td class="py-2 pl-2 text-right">{{ exact(used(account[metric.key])) }}</td>
                 <td
                   class="py-2 pl-2 text-right font-medium"
-                  :class="account[metric.key].remaining === 0 ? 'text-red-400' : 'text-gray-200'"
+                  :class="displayRemaining(account, metric.key) === 0 ? 'text-red-400' : 'text-gray-200'"
                 >
-                  {{ exact(account[metric.key].remaining) }}
+                  {{ exact(displayRemaining(account, metric.key)) }}
+                  <span
+                    v-if="limitedUnknown(account, metric.key)"
+                    class="mt-0.5 block max-w-32 text-[10px] font-normal whitespace-normal text-gray-500"
+                  >
+                    {{ t('quota.limitedUnknownZero') }}
+                  </span>
                 </td>
                 <td class="py-2 pl-2 text-right text-gray-500">
                   {{ exact(account[metric.key].limit) }}

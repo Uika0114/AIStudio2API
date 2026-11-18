@@ -81,7 +81,17 @@ function setScenario(scenario: string): void {
     target[metric].remaining = null
     for (const account of target.accounts ?? []) {
       account[metric].remaining = null
-      account.exhausted_429 = true
+      delete account.exhausted_429
+    }
+  } else if (state === 'limited-unknown' || state === 'all-limited-unknown') {
+    for (const metric of ['tokens', 'requests'] as const) {
+      target[metric].remaining = null
+      for (const [index, account] of (target.accounts ?? []).entries()) {
+        if (index === 0 || state === 'all-limited-unknown') {
+          account[metric].remaining = null
+          account.exhausted_429 = true
+        }
+      }
     }
   } else if (state === 'partial' || state === 'partial-zero') {
     const accounts = target.accounts ?? []
