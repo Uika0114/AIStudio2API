@@ -166,7 +166,7 @@ export const api = {
     requestJSON<UsageReport>(`/api/usage?${query.toString()}`, { signal: signal ?? null }),
   quotaEstimate: (signal?: AbortSignal, model: QuotaEstimateReport['model'] = 'gemini-4-argon') =>
     requestJSON<QuotaEstimateReport>(
-      model === 'gemini-4-argon' ? '/api/usage/quota' : `/api/usage/quota?model=${model}`,
+      model === 'gemini-4-argon' ? '/api/usage/quota' : `/api/usage/quota?model=${encodeURIComponent(model)}`,
       { signal: signal ?? null },
     ),
   usageRecords: (query: URLSearchParams, signal?: AbortSignal) =>

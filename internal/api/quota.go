@@ -2,13 +2,18 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
 type QuotaService interface {
 	Quota(context.Context) (QuotaReport, error)
 }
+
+var ErrUnsupportedQuotaModel = errors.New("unsupported quota model")
 
 // ModelQuotaService extends the legacy Argon-only API without changing its contract.
 type ModelQuotaService interface {
@@ -71,13 +76,13 @@ type QuotaHistory struct {
 
 func (s *server) handleQuota(w http.ResponseWriter, r *http.Request) {
 	model := r.URL.Query().Get("model")
-	if len(r.URL.Query()["model"]) > 1 || (model != "" && model != "gemini-4-argon" && model != "gemini-4-carbon" && model != "gemini-4-hydrogen") {
+	if len(r.URL.Query()["model"]) > 1 || (model != "" && !aistudio.IsGemini4QuotaModel(model)) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"message": "不支持的额度模型"}})
 		return
 	}
 	var report QuotaReport
 	var err error
-	if model == "gemini-4-carbon" || model == "gemini-4-hydrogen" {
+	if model != "" && model != "gemini-4-argon" {
 		service, ok := s.config.Quota.(ModelQuotaService)
 		if !ok {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{"message": "额度估算暂不可用"}})
@@ -88,6 +93,10 @@ func (s *server) handleQuota(w http.ResponseWriter, r *http.Request) {
 		report, err = s.config.Quota.Quota(r.Context())
 	}
 	if err != nil {
+		if errors.Is(err, ErrUnsupportedQuotaModel) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"message": "不支持的额度模型"}})
+			return
+		}
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{"message": "额度估算暂不可用"}})
 		return
 	}

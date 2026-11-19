@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
+import { additionalGemini4QuotaModels, fixedQuotaModels, gemini4QuotaLabel } from '@/quota-models'
 import type { Model, QuotaEstimateReport, UsageDimension, UsageReport, UsageStats } from '@/types'
 import UiIcon from './UiIcon.vue'
 import UiSelect from './UiSelect.vue'
@@ -36,6 +37,14 @@ const carbonQuotaReport = shallowRef<QuotaEstimateReport | null>(null)
 const carbonQuotaError = ref('')
 const hydrogenQuotaReport = shallowRef<QuotaEstimateReport | null>(null)
 const hydrogenQuotaError = ref('')
+const additionalQuotaModels = computed(() => additionalGemini4QuotaModels(props.models))
+const extraQuota = shallowRef<Record<string, { report: QuotaEstimateReport | null; error: string }>>({})
+const additionalPools = computed(() => additionalQuotaModels.value.map((model) => ({
+  model,
+  label: gemini4QuotaLabel(model),
+  report: extraQuota.value[model]?.report ?? null,
+  error: extraQuota.value[model]?.error ?? '',
+})))
 let quotaController: AbortController | undefined
 let quotaLoading = false
 let quotaFetchedAt = 0
@@ -57,9 +66,11 @@ async function loadQuota(): Promise<void> {
       } else if (model === 'gemini-4-carbon') {
         carbonQuotaReport.value = value
         carbonQuotaError.value = ''
-      } else {
+      } else if (model === 'gemini-4-hydrogen') {
         hydrogenQuotaReport.value = value
         hydrogenQuotaError.value = ''
+      } else {
+        extraQuota.value = { ...extraQuota.value, [model]: { report: value, error: '' } }
       }
     } catch (reason) {
       if (current.signal.aborted) return
@@ -69,12 +80,18 @@ async function loadQuota(): Promise<void> {
       } else {
         // Retain membership visibility, but do not display a stale balance on errors.
         if (model === 'gemini-4-carbon') carbonQuotaError.value = errorText(reason)
-        else hydrogenQuotaError.value = errorText(reason)
+        else if (model === 'gemini-4-hydrogen') hydrogenQuotaError.value = errorText(reason)
+        else extraQuota.value = { ...extraQuota.value, [model]: { report: null, error: errorText(reason) } }
       }
     }
   }
   try {
-    await Promise.all([read('gemini-4-argon'), read('gemini-4-carbon'), read('gemini-4-hydrogen')])
+    const models = [...additionalQuotaModels.value]
+    extraQuota.value = Object.fromEntries(Object.entries(extraQuota.value).filter(([id]) => models.some((model) => model === id)))
+    await Promise.all(fixedQuotaModels.map(read))
+    for (let offset = 0; offset < models.length && !current.signal.aborted; offset += 4) {
+      await Promise.all(models.slice(offset, offset + 4).map(read))
+    }
   } finally {
     if (quotaController === current) {
       quotaLoading = false
@@ -193,6 +210,8 @@ function tick(): void {
 function resume(): void {
   if (document.visibilityState === 'visible') tick()
 }
+
+watch(() => additionalQuotaModels.value.join(','), () => void loadQuota())
 
 onMounted(() => {
   void load()
@@ -541,6 +560,7 @@ const statusOptions = computed(() =>
         :carbon-error="carbonQuotaError"
         :hydrogen-report="hydrogenQuotaReport"
         :hydrogen-error="hydrogenQuotaError"
+        :additional-pools="additionalPools"
       />
       <template v-if="status === 'loading'">
         <div
@@ -579,6 +599,7 @@ const statusOptions = computed(() =>
             :carbon-error="carbonQuotaError"
             :hydrogen-report="hydrogenQuotaReport"
             :hydrogen-error="hydrogenQuotaError"
+            :additional-pools="additionalPools"
           />
           <div
             v-if="report.totals.requests === 0"
@@ -624,6 +645,7 @@ const statusOptions = computed(() =>
               :carbon-error="carbonQuotaError"
               :hydrogen-report="hydrogenQuotaReport"
               :hydrogen-error="hydrogenQuotaError"
+              :additional-pools="additionalPools"
             />
             <UsageCharts
               :report="report"

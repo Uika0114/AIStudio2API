@@ -117,6 +117,9 @@ type Store struct {
 	quotaCarbonGap     atomic.Int64
 	quotaHydrogenSince time.Time
 	quotaHydrogenGap   atomic.Int64
+	quotaDynamicMu     sync.Mutex
+	quotaDynamic       map[quotaScope]*dynamicQuotaState
+	quotaOpenedAt      time.Time
 	quotaWrites        chan quotaWrite
 	quotaDone          chan struct{}
 }

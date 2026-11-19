@@ -9,6 +9,7 @@ defineProps<{
   carbonError: string
   hydrogenReport: QuotaEstimateReport | null
   hydrogenError: string
+  additionalPools?: { model: string; label: string; report: QuotaEstimateReport | null; error: string }[]
 }>()
 </script>
 
@@ -26,6 +27,13 @@ defineProps<{
       :report="hydrogenError ? null : hydrogenReport"
       :error="hydrogenError"
       model-label="Hydrogen"
+    />
+    <QuotaBars
+      v-for="pool in additionalPools"
+      :key="pool.model"
+      :report="pool.error ? null : pool.report"
+      :error="pool.error"
+      :model-label="pool.label"
     />
   </div>
 </template>

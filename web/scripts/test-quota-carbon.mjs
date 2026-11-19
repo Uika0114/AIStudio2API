@@ -382,3 +382,24 @@ test('verification-only Carbon report keeps the pool visible without advertising
   assert.match(html, /quota-unknown/)
   assert.doesNotMatch(html, /data-quota-assumed-zero=|2900万/)
 })
+
+test('catalog discovery adds one ordinary Gemini 4 pool for ordinary and anti aliases', async () => {
+  const { additionalGemini4QuotaModels, gemini4QuotaLabel } = await server.ssrLoadModule('/src/quota-models.ts')
+  const model = 'gemini-4-neon-preview'
+  const entry = { id: model, channels: ['playground'], methods: ['generateContent'] }
+  const models = additionalGemini4QuotaModels([
+    entry,
+    { ...entry, id: `playground/anti-truncation/${model}`, base_model: `models/${model}` },
+    { ...entry, id: 'gemini-4-carbon' },
+    { ...entry, id: 'gemini-4-build', channels: ['build'] },
+    { ...entry, id: 'gemini-4-media', methods: ['predict'] },
+    { ...entry, id: 'gemini-3.8-flash' },
+    { ...entry, id: 'gemini-4-raw-anti' },
+  ])
+  assert.deepEqual(models, [model])
+  const html = await render({ additionalPools: models.map(base => ({ model: base, label: gemini4QuotaLabel(base), report: report(base), error: '' })) })
+  const section = poolHTML(html, 'Neon-Preview')
+  assert.equal([...section.matchAll(/data-quota="/g)].length, 2)
+  assert.match(text(section), /Neon-PreviewToken2900万/)
+  assert.doesNotMatch(text(section), /估算/)
+})

@@ -54,10 +54,12 @@ func (store *Store) openQuota() error {
 	if _, err = conn.ExecContext(ctx, `PRAGMA busy_timeout=25`); err != nil {
 		return fail(err)
 	}
+
 	if _, err = conn.ExecContext(ctx, quotaLimitsSchema); err != nil {
 		return fail(err)
 	}
 	now := time.Now().UTC()
+	store.quotaOpenedAt = now
 	for _, scope := range []quotaScope{argonQuota, carbonQuota, hydrogenQuota} {
 		if err = store.openQuotaScope(ctx, conn, scope, now); err != nil {
 			return fail(err)
@@ -74,6 +76,9 @@ func (store *Store) openQuota() error {
 
 func (store *Store) quotaFailure(scope quotaScope, at time.Time) {
 	_, gap := store.quotaTracking(scope)
+	if gap == nil {
+		return
+	}
 	value := at.UnixMilli()
 	for old := gap.Load(); value > old; old = gap.Load() {
 		if gap.CompareAndSwap(old, value) {
@@ -89,7 +94,7 @@ func (store *Store) RecordQuotaAttempt(attempt aistudio.GenerationAttempt) {
 		return
 	}
 	scope, ok := quotaScopeForModel(strings.TrimPrefix(attempt.BaseModel, "models/"))
-	if !ok {
+	if !ok || (scope.dynamic() && !strings.EqualFold(attempt.Method, "generateContent")) {
 		return
 	}
 	if attempt.SentAt.IsZero() || attempt.ID == "" || attempt.AccountID == "" || attempt.Revision > math.MaxInt64 {
@@ -162,6 +167,10 @@ func (store *Store) writeQuota(item quotaWrite) {
 	defer store.quotaMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
 	defer cancel()
+	if err := store.ensureDynamicQuota(ctx, scope, time.Now().UTC()); err != nil {
+		store.quotaFailure(scope, item.sentAt)
+		return
+	}
 	_, err := store.quotaConn.ExecContext(ctx, `INSERT INTO `+scope.attempts+`
  (epoch,id,revision,account,quota_tier,window,sent_at,tokens,reported,ended,limited) VALUES(?,?,?,?,?,?,?,?,?,?,?)
  ON CONFLICT(epoch,id) DO UPDATE SET revision=excluded.revision,
@@ -221,7 +230,7 @@ func (store *Store) closeQuota() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	for _, scope := range []quotaScope{argonQuota, carbonQuota, hydrogenQuota} {
+	for _, scope := range store.quotaScopesForClose() {
 		_, gap := store.quotaTracking(scope)
 		if _, err := store.quotaConn.ExecContext(ctx, `UPDATE `+scope.tracking+` SET clean=1,gap_at=MAX(gap_at,?),closed_at=? WHERE id=1`, gap.Load(), time.Now().UnixMilli()); err != nil && store.log != nil {
 			store.log("WARN", "额度观察未完成正常关闭；下次启动标记覆盖缺口")
@@ -271,7 +280,6 @@ func (store *Store) QuotaSnapshotForModel(ctx context.Context, members []api.Quo
 	if !ok {
 		return api.QuotaReport{}, errors.New("unsupported quota model")
 	}
-	since, gapState := store.quotaTracking(scope)
 	if err := store.flushQuota(ctx); err != nil {
 		return api.QuotaReport{}, err
 	}
@@ -280,6 +288,10 @@ func (store *Store) QuotaSnapshotForModel(ctx context.Context, members []api.Quo
 	if store.quotaConn == nil {
 		return api.QuotaReport{}, errors.New("quota unavailable")
 	}
+	if err := store.ensureDynamicQuota(ctx, scope, now.UTC()); err != nil {
+		return api.QuotaReport{}, err
+	}
+	since, gapState := store.quotaTracking(scope)
 	from := QuotaWindow(now)
 	report := api.QuotaReport{Channel: "playground", Model: scope.model, Method: "reported_usage_coarse_v1", PeriodFrom: from, ResetAt: from.Add(24 * time.Hour), UpdatedAt: now.UTC(), ObservedSince: *since, Coverage: "complete", Accounts: []api.QuotaAccount{}}
 	complete := !since.After(from)
@@ -291,7 +303,7 @@ func (store *Store) QuotaSnapshotForModel(ctx context.Context, members []api.Quo
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return api.QuotaReport{}, err
 	}
-	estimateKnown := complete
+	estimateKnown := complete || scope.dynamic()
 	if err == nil && attempts > 0 && until == since.UnixMilli() {
 		report.History = &api.QuotaHistory{From: from, Until: time.UnixMilli(until).UTC(), Attempts: attempts, Skipped: skipped, TimeSource: "preparation_start"}
 		if !complete {

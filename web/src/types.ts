@@ -136,6 +136,7 @@ export interface RequestLog {
 
 export interface Model {
   id: string
+  base_model?: string
   name: string
   description?: string
   methods: string[]
@@ -423,7 +424,7 @@ export interface QuotaAccountEstimate {
 
 export interface QuotaEstimateReport {
   channel: 'playground'
-  model: 'gemini-4-argon' | 'gemini-4-carbon' | 'gemini-4-hydrogen'
+  model: `gemini-4-${string}`
   period_from: string
   reset_at: string
   updated_at: string

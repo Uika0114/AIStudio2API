@@ -3,9 +3,12 @@ package requestdb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
 // Keep existing model tables unchanged so a program-only rollback cannot mix
@@ -27,6 +30,9 @@ func quotaScopeForModel(model string) (quotaScope, bool) {
 	case hydrogenQuota.model:
 		return hydrogenQuota, true
 	default:
+		if aistudio.IsGemini4QuotaModel(model) {
+			return dynamicQuotaScope(model), true
+		}
 		return quotaScope{}, false
 	}
 }
@@ -44,6 +50,12 @@ func (scope quotaScope) schema() string {
 }
 
 func (store *Store) quotaTracking(scope quotaScope) (*time.Time, *atomic.Int64) {
+	if scope.dynamic() {
+		if state := store.dynamicQuotaState(scope); state != nil {
+			return &state.since, &state.gap
+		}
+		return nil, nil
+	}
 	if scope == carbonQuota {
 		return &store.quotaCarbonSince, &store.quotaCarbonGap
 	}
@@ -54,6 +66,10 @@ func (store *Store) quotaTracking(scope quotaScope) (*time.Time, *atomic.Int64) 
 }
 
 func (store *Store) openQuotaScope(ctx context.Context, conn *sql.Conn, scope quotaScope, now time.Time) error {
+	return store.openQuotaScopeAt(ctx, conn, scope, now, now)
+}
+
+func (store *Store) openQuotaScopeAt(ctx context.Context, conn *sql.Conn, scope quotaScope, now, observedAt time.Time) error {
 	if _, err := conn.ExecContext(ctx, scope.schema()); err != nil {
 		return err
 	}
@@ -67,7 +83,7 @@ func (store *Store) openQuotaScope(ctx context.Context, conn *sql.Conn, scope qu
 			return err
 		}
 	}
-	if _, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO `+scope.tracking+`(id,observed_since,clean,gap_at) VALUES(1,?,1,0)`, now.UnixMilli()); err != nil {
+	if _, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO `+scope.tracking+`(id,observed_since,clean,gap_at) VALUES(1,?,1,0)`, observedAt.UnixMilli()); err != nil {
 		return err
 	}
 	var since, clean, gap, closedAt int64
@@ -104,7 +120,14 @@ func (store *Store) openQuotaScope(ctx context.Context, conn *sql.Conn, scope qu
 		return err
 	}
 	stateSince, stateGap := store.quotaTracking(scope)
+	if stateSince == nil {
+		return errors.New("quota model limit reached")
+	}
 	*stateSince = observedSince
-	stateGap.Store(gap)
+	for current := stateGap.Load(); gap > current; current = stateGap.Load() {
+		if stateGap.CompareAndSwap(current, gap) {
+			break
+		}
+	}
 	return nil
 }
