@@ -3,6 +3,7 @@ package authhelper
 import (
 	"context"
 	"path/filepath"
+	"slices"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
@@ -39,6 +40,7 @@ func ReenrollNative(ctx context.Context, client *Client, path string, binding ai
 		return failure("ACK_REQUIRED")
 	}
 	binding.Retired = append(append([]aistudio.RetiredRemoteBinding(nil), old.Retired...), aistudio.RetiredRemoteBinding{Handle: old.Handle, Consumer: old.Consumer, Epoch: old.Epoch, CookieRevision: old.CookieRevision, MaterialVersion: old.MaterialVersion, Pending: old.Pending, Ack: old.Ack})
+	binding.RetiredOperations = slices.Clone(old.RetiredOperations)
 	binding.EnrollmentRequired = true
 	binding.Pending, binding.Ack = nil, nil
 	meta.Remote = &binding
