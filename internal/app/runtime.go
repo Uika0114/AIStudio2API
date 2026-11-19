@@ -3696,7 +3696,13 @@ func (service *trackedService) generateWithRetry(
 			break
 		}
 		recoverWorker := false
-		if aistudio.DefinitiveAuthenticationFailure(err) {
+		verificationRequired := aistudio.IsAccountVerificationRequired(err)
+		if verificationRequired {
+			if stateErr := lease.MarkAccountVerificationRequired(); stateErr != nil {
+				err = errors.Join(err, stateErr)
+				retryable = false
+			}
+		} else if aistudio.DefinitiveAuthenticationFailure(err) {
 			if stateErr := lease.MarkAuthenticationRequired(err.Error()); stateErr != nil {
 				err = errors.Join(err, stateErr)
 				retryable = false
@@ -3748,7 +3754,7 @@ func (service *trackedService) generateWithRetry(
 			err = errors.Join(err, releaseErr)
 			break
 		}
-		if requestCtx.Err() == nil {
+		if !verificationRequired && requestCtx.Err() == nil {
 			var resetErr error
 			recoverWorker, _, resetErr = service.recoverWorkerOnce(
 				requestCtx, request.AccountID, workerGeneration, recoveredWorker,
@@ -4078,7 +4084,10 @@ func (service *trackedService) forwardEvents(
 				event.Err = errors.New("upstream returned an empty error event")
 				requestErr = event.Err
 			}
-			if aistudio.DefinitiveAuthenticationFailure(event.Err) {
+			if aistudio.IsAccountVerificationRequired(event.Err) {
+				event.Err = errors.Join(event.Err, lease.MarkAccountVerificationRequired())
+				requestErr = event.Err
+			} else if aistudio.DefinitiveAuthenticationFailure(event.Err) {
 				if stateErr := lease.MarkAuthenticationRequired(event.Err.Error()); stateErr != nil {
 					requestErr = errors.Join(requestErr, stateErr)
 					event.Err = requestErr

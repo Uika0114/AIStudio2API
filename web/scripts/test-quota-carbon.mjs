@@ -371,3 +371,14 @@ test('limited unknown estimates do not bypass failed reads or inconsistent membe
     assert.doesNotMatch(html, /data-quota-assumed-zero=/)
   }
 })
+
+test('verification-only Carbon report keeps the pool visible without advertising remaining supply', async () => {
+  const value = report('gemini-4-carbon')
+  value.accounts[0].included = false
+  value.accounts[0].block_code = 'ACCOUNT_VERIFICATION_REQUIRED'
+  value.accounts[0].exhausted_429 = true
+  value.tokens = value.requests = { limit: null, used: null, remaining: null }
+  const html = poolHTML(await render({ carbonReport: value }), 'Carbon')
+  assert.match(html, /quota-unknown/)
+  assert.doesNotMatch(html, /data-quota-assumed-zero=|2900万/)
+})

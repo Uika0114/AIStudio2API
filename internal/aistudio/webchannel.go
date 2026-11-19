@@ -538,6 +538,14 @@ func (s *BidiSession) forwardEvent(event BidiEvent) bool {
 	}
 }
 
+func (s *BidiSession) bidiRPCFailure(status int, body []byte) error {
+	err := DecodeRPCError("BidiGenerateContent", status, body)
+	if s.lease != nil && IsAccountVerificationRequired(err) {
+		return errors.Join(err, s.lease.MarkAccountVerificationRequired())
+	}
+	return err
+}
+
 func (s *BidiSession) handshake(ctx context.Context, protocolHeaders http.Header) error {
 	zx, err := newWebChannelZX()
 	if err != nil {
@@ -559,6 +567,9 @@ func (s *BidiSession) handshake(ctx context.Context, protocolHeaders http.Header
 	}
 	request.Header = s.cloneHeaders()
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := s.lease.CheckAccountVerification(); err != nil {
+		return err
+	}
 	response, err := s.client.Do(request)
 	if err != nil {
 		return fmt.Errorf("执行 bidi WebChannel handshake: %w", err)
@@ -569,7 +580,7 @@ func (s *BidiSession) handshake(ctx context.Context, protocolHeaders http.Header
 		return fmt.Errorf("读取 bidi WebChannel handshake: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return DecodeRPCError("BidiGenerateContent", response.StatusCode, body)
+		return s.bidiRPCFailure(response.StatusCode, body)
 	}
 	if err := s.mergeCookies(response, requestURL); err != nil {
 		return err
@@ -704,6 +715,9 @@ func (s *BidiSession) postMessage(ctx context.Context, payload []byte, qualifies
 func (s *BidiSession) postBatch(ctx context.Context, batch []bidiOutgoing) (resultErr error) {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
+	if err := s.lease.CheckAccountVerification(); err != nil {
+		return err
+	}
 	qualifying := 0
 	for _, entry := range batch {
 		if entry.qualifies {
@@ -754,6 +768,9 @@ func (s *BidiSession) postBatch(ctx context.Context, batch []bidiOutgoing) (resu
 	}
 	request.Header = s.cloneHeaders()
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := s.lease.CheckAccountVerification(); err != nil {
+		return err
+	}
 	response, err := s.client.Do(request)
 	if err != nil {
 		return fmt.Errorf("执行 bidi WebChannel message: %w", err)
@@ -764,7 +781,7 @@ func (s *BidiSession) postBatch(ctx context.Context, batch []bidiOutgoing) (resu
 		return fmt.Errorf("读取 bidi WebChannel ACK: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return DecodeRPCError("BidiGenerateContent", response.StatusCode, body)
+		return s.bidiRPCFailure(response.StatusCode, body)
 	}
 	if err := s.mergeCookies(response, requestURL); err != nil {
 		return err
@@ -885,7 +902,7 @@ func (s *BidiSession) readBackchannel(first bool, ready func(error)) (int, error
 		if readErr != nil {
 			return 0, readErr
 		}
-		return 0, DecodeRPCError("BidiGenerateContent", response.StatusCode, body)
+		return 0, s.bidiRPCFailure(response.StatusCode, body)
 	}
 	if err := s.mergeCookies(response, requestURL); err != nil {
 		return 0, err

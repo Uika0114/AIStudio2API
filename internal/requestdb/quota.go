@@ -361,6 +361,13 @@ func (store *Store) QuotaSnapshotForModel(ctx context.Context, members []api.Quo
 			}
 		}
 		account := api.QuotaAccount{ID: member.ID, Label: member.Label, Tier: member.Tier, State: member.State, Exhausted429: u.unknownLimited || u.tokensLimited || u.requestsLimited, InFlight: u.inFlight, Unreported: u.unreported}
+		account.BlockCode = member.BlockCode
+		if account.BlockCode != "" {
+			account.Requests.Used, account.Tokens.Used = quotaInt(u.requests), quotaInt(u.tokens)
+			report.ExcludedAccounts++
+			report.Accounts = append(report.Accounts, account)
+			continue
+		}
 		r, t := quotaCaps(member.Tier)
 		if r > 0 {
 			if limit, ok := limits[quotaLimitKey{strings.ToLower(member.Tier), member.ID, "requests"}]; ok {

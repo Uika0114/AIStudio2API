@@ -18,6 +18,7 @@ export interface Account {
   models: string[]
   benefit_tier: string
   message: string
+  verification_id?: string
 }
 
 export interface ProxyPoolEntry {
@@ -415,6 +416,7 @@ export interface QuotaAccountEstimate {
   included: boolean
   label: string
   exhausted_429?: boolean
+  block_code?: string
   tokens: QuotaBalance
   requests: QuotaBalance
 }

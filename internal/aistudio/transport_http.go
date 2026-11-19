@@ -201,6 +201,9 @@ func (t *MakerSuiteHTTPTransport) Do(ctx context.Context, rpc RPCRequest) (*RPCR
 	if err != nil {
 		return nil, releaseOnError(err)
 	}
+	if err := lease.CheckAccountVerification(); err != nil {
+		return nil, releaseOnError(err)
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, releaseOnError(fmt.Errorf("执行 MakerSuite %s 请求: %w", rpc.Method, err))
@@ -334,6 +337,9 @@ func validateLeaseSelection(lease *AccountLease, selection AccountSelection) err
 	account := lease.Account()
 	if lease.pool.byID[account.ID] != account {
 		return fmt.Errorf("context 租约账户不存在: %s", account.ID)
+	}
+	if account.verificationIDLocked() != "" && (lease.purpose == leaseGeneration || lease.purpose == leaseResourceResult) {
+		return SessionError(AccountVerificationRequiredCode)
 	}
 	if accountID := strings.TrimSpace(selection.AccountID); accountID != "" && account.ID != accountID {
 		return fmt.Errorf("context 租约账户 %s 与请求账户 %s 不一致", account.ID, accountID)

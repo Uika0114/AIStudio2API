@@ -58,7 +58,7 @@ func (p *AccountPool) publishRemoteQuarantineLocked(account *Account) {
 }
 
 func generationCandidate(account *Account) bool {
-	if account == nil || !account.Config.Enabled {
+	if account == nil || !account.Config.Enabled || account.verificationIDLocked() != "" {
 		return false
 	}
 	// A live refresh is busy, not a failed authentication. It remains waitable,
@@ -70,7 +70,7 @@ func generationCandidate(account *Account) bool {
 }
 
 func resourceResultCandidate(account *Account) bool {
-	if account == nil || !account.Config.Enabled {
+	if account == nil || !account.Config.Enabled || account.verificationIDLocked() != "" {
 		return false
 	}
 	code := remoteQuarantineCode(account.StorageState)

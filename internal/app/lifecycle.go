@@ -431,6 +431,16 @@ func (manager *runtimeManager) RefreshAccount(ctx context.Context, id string) (a
 	return manager.current.admin.RefreshAccount(ctx, id)
 }
 
+func (manager *runtimeManager) ClearAccountVerification(ctx context.Context, id, verificationID string) error {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	operator, ok := manager.current.admin.(api.AccountVerificationControl)
+	if !ok {
+		return &adminOperationError{status: http.StatusServiceUnavailable, code: "verification_control_unavailable", message: "账号验证管理不可用"}
+	}
+	return operator.ClearAccountVerification(ctx, id, verificationID)
+}
+
 // ClearLogs 清空进程级管理日志
 func (manager *runtimeManager) ClearLogs(context.Context) error {
 	manager.requests.clearLogs()

@@ -31,7 +31,7 @@ func (manager *runtimeManager) QuotaForModel(ctx context.Context, model string) 
 	}
 	members := make([]api.QuotaMember, 0, len(accounts))
 	for _, account := range accounts {
-		members = append(members, api.QuotaMember{ID: account.ID, Label: account.Label, Tier: account.BenefitTier, State: account.State, Enabled: account.Enabled})
+		members = append(members, api.QuotaMember{ID: account.ID, Label: account.Label, Tier: account.BenefitTier, State: account.State, Enabled: account.Enabled, BlockCode: account.BlockCode})
 	}
 	return ledger.QuotaSnapshotForModel(ctx, members, time.Now(), model)
 }

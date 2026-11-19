@@ -149,6 +149,7 @@ type accountRuntimeState struct {
 	BenefitTier        BenefitTier                `json:"benefit_tier,omitempty"`
 	CatalogFingerprint string                     `json:"catalog_fingerprint,omitempty"`
 	Proxy              string                     `json:"proxy,omitempty"`
+	VerificationID     string                     `json:"verification_id,omitempty"`
 }
 
 // ModelAccessState 表示账户对单个模型的实测调用资格
@@ -190,6 +191,7 @@ type Account struct {
 	runtimeMu             sync.Mutex
 	persistenceLocked     bool
 	authGeneration        uint64
+	verificationPending   string
 	authCheckedAt         time.Time
 	modelAccessGeneration uint64
 	stateMessage          string
@@ -201,19 +203,21 @@ type Account struct {
 
 // AccountStatus 表示管理界面使用的脱敏账户状态
 type AccountStatus struct {
-	ID          string                   `json:"id"`
-	Label       string                   `json:"label"`
-	State       AccountState             `json:"state"`
-	Enabled     bool                     `json:"enabled"`
-	Proxy       string                   `json:"proxy"`
-	Egress      string                   `json:"egress"`
-	Locale      string                   `json:"locale"`
-	Timezone    string                   `json:"timezone"`
-	Models      []string                 `json:"models"`
-	BenefitTier string                   `json:"benefit_tier"`
-	Cooldowns   map[string]CooldownState `json:"-"`
-	LastUsed    *time.Time               `json:"last_used,omitempty"`
-	Message     string                   `json:"message,omitempty"`
+	ID             string                   `json:"id"`
+	Label          string                   `json:"label"`
+	State          AccountState             `json:"state"`
+	Enabled        bool                     `json:"enabled"`
+	Proxy          string                   `json:"proxy"`
+	Egress         string                   `json:"egress"`
+	Locale         string                   `json:"locale"`
+	Timezone       string                   `json:"timezone"`
+	Models         []string                 `json:"models"`
+	BenefitTier    string                   `json:"benefit_tier"`
+	Cooldowns      map[string]CooldownState `json:"-"`
+	LastUsed       *time.Time               `json:"last_used,omitempty"`
+	Message        string                   `json:"message,omitempty"`
+	BlockCode      string                   `json:"block_code,omitempty"`
+	VerificationID string                   `json:"verification_id,omitempty"`
 }
 
 // AccountSelection 描述账户调度所需的能力或粘性条件
@@ -1287,7 +1291,7 @@ func (p *AccountPool) noEligibleErrorLocked(selection AccountSelection) error {
 	selection.ModelID = strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")
 	var reasons []string
 	for _, account := range p.accounts {
-		if account == nil || account.Config.Enabled && account.State == AccountReady {
+		if account == nil || account.Config.Enabled && account.State == AccountReady && account.verificationIDLocked() == "" {
 			continue
 		}
 		if selection.ModelID != "" && !p.accountSupportsAnyChannelLocked(account, selection) {
@@ -1301,7 +1305,11 @@ func (p *AccountPool) noEligibleErrorLocked(selection AccountSelection) error {
 			label = accountStateLabels[AccountDisabled]
 		}
 		reason := account.ID + " " + label
-		if message := strings.TrimSpace(account.stateMessage); message != "" {
+		message := strings.TrimSpace(account.stateMessage)
+		if account.verificationIDLocked() != "" {
+			message = accountVerificationRequiredMessage
+		}
+		if message != "" {
 			reason += "（" + message + "）"
 		}
 		reasons = append(reasons, reason)
@@ -2450,6 +2458,7 @@ func (p *AccountPool) Status() []AccountStatus {
 				state = AccountUnavailable
 			}
 		}
+		blockedState := state
 		_, active := accountCooldown(account, "", now)
 		if !account.Config.Enabled {
 			state = AccountDisabled
@@ -2467,6 +2476,13 @@ func (p *AccountPool) Status() []AccountStatus {
 		sort.Strings(models)
 		tier := account.BenefitTier.String()
 		message := account.stateMessage
+		blockCode := ""
+		if blockedState == AccountAuthRequired {
+			blockCode = "AUTH_REQUIRED"
+		}
+		if blockedState == AccountUnavailable {
+			blockCode = "ACCOUNT_UNAVAILABLE"
+		}
 		if code != "" {
 			message = code
 		}
@@ -2476,19 +2492,29 @@ func (p *AccountPool) Status() []AccountStatus {
 				message = account.catalogError
 			}
 		}
+		verificationID := account.verificationIDLocked()
+		if verificationID != "" {
+			blockCode = AccountVerificationRequiredCode
+			message = accountVerificationRequiredMessage
+			if account.Config.Enabled {
+				state = AccountAuthRequired
+			}
+		}
 		status := AccountStatus{
-			ID:          account.ID,
-			Label:       account.Config.Label,
-			State:       state,
-			Enabled:     account.Config.Enabled,
-			Proxy:       account.Config.Proxy,
-			Egress:      account.EffectiveProxy(""),
-			Locale:      account.Config.Locale,
-			Timezone:    account.Config.Timezone,
-			Models:      models,
-			BenefitTier: tier,
-			Cooldowns:   cloneCooldowns(account.runtime.Cooldowns),
-			Message:     message,
+			BlockCode:      blockCode,
+			VerificationID: verificationID,
+			ID:             account.ID,
+			Label:          account.Config.Label,
+			State:          state,
+			Enabled:        account.Config.Enabled,
+			Proxy:          account.Config.Proxy,
+			Egress:         account.EffectiveProxy(""),
+			Locale:         account.Config.Locale,
+			Timezone:       account.Config.Timezone,
+			Models:         models,
+			BenefitTier:    tier,
+			Cooldowns:      cloneCooldowns(account.runtime.Cooldowns),
+			Message:        message,
 		}
 		if !account.LastUsed.IsZero() {
 			status.LastUsed = timePointer(account.LastUsed)
@@ -3402,6 +3428,7 @@ func cloneRuntime(value accountRuntimeState) accountRuntimeState {
 		BenefitTier:        value.BenefitTier,
 		CatalogFingerprint: value.CatalogFingerprint,
 		Proxy:              value.Proxy,
+		VerificationID:     value.VerificationID,
 	}
 	for key, cooldown := range value.Cooldowns {
 		result.Cooldowns[key] = cooldown

@@ -151,6 +151,8 @@ type AdminAccount struct {
 	Models         []string             `json:"models"`
 	BenefitTier    string               `json:"benefit_tier"`
 	Message        string               `json:"message"`
+	BlockCode      string               `json:"block_code,omitempty"`
+	VerificationID string               `json:"verification_id,omitempty"`
 	RemoteRecovery *AdminRemoteRecovery `json:"remote_recovery,omitempty"`
 }
 
@@ -314,6 +316,7 @@ func (s *server) registerAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleDeleteAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/login", s.handleLoginAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleRefreshAccount)
+	mux.HandleFunc("POST /api/accounts/{id}/verification/clear", s.handleClearAccountVerification)
 	mux.HandleFunc("POST /api/control/start", s.handleStartService)
 	mux.HandleFunc("POST /api/control/stop", s.handleStopService)
 	mux.HandleFunc("DELETE /api/logs", s.handleClearLogs)
@@ -481,6 +484,30 @@ func (s *server) handleRefreshAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, refresh)
+}
+
+type AccountVerificationControl interface {
+	ClearAccountVerification(context.Context, string, string) error
+}
+
+func (s *server) handleClearAccountVerification(w http.ResponseWriter, r *http.Request) {
+	operator, ok := s.config.Admin.(AccountVerificationControl)
+	if !ok {
+		writeAdminError(w, http.StatusServiceUnavailable, "verification_control_unavailable", "账号验证管理不可用")
+		return
+	}
+	var input struct {
+		VerificationID string `json:"verification_id"`
+	}
+	if err := decodeJSON(r, &input); err != nil || strings.TrimSpace(input.VerificationID) == "" || len(input.VerificationID) > 128 {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", "需要当前账号验证阻断 ID")
+		return
+	}
+	if err := operator.ClearAccountVerification(r.Context(), r.PathValue("id"), input.VerificationID); err != nil {
+		writeAdminUpstreamError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) handleStartService(w http.ResponseWriter, r *http.Request) {

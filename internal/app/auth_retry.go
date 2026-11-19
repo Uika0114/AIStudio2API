@@ -205,6 +205,11 @@ func (refresher *authRuntimeRefresher) Recover(ctx context.Context, cause error)
 	if aistudio.IsSessionFailure(cause) {
 		return cause
 	}
+	if lease, ok := aistudio.AccountLeaseFromContext(ctx); ok {
+		if err := lease.CheckAccountVerification(); err != nil {
+			return err
+		}
+	}
 	ctx = aistudio.WithRemoteAuthBudget(ctx)
 	var startup *accountWorkerInitError
 	if errors.As(cause, &startup) && startup.authHandled {

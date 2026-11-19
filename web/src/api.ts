@@ -200,6 +200,10 @@ export const api = {
     requestCommand(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE', keepalive }),
   loginAccount: (id: string) =>
     requestCommand(`/api/accounts/${encodeURIComponent(id)}/login`, { method: 'POST' }),
+  clearAccountVerification: (id: string, verificationId: string) =>
+    requestCommand(`/api/accounts/${encodeURIComponent(id)}/verification/clear`, {
+      method: 'POST', body: JSON.stringify({ verification_id: verificationId }),
+    }),
   refreshAccount: (id: string) =>
     requestJSON<AccountRefresh>(`/api/accounts/${encodeURIComponent(id)}/refresh`, {
       method: 'POST',

@@ -163,6 +163,9 @@ func (t *WorkerProtectedTransport) doBrowserPrepared(
 	}
 	headers := rpc.Header.Clone()
 	headers.Set("Authorization", authorization)
+	if err := lease.CheckAccountVerification(); err != nil {
+		return nil, err
+	}
 	if lease.CoolingDown(selection.ModelID) {
 		return nil, ErrAccountCoolingDown
 	}
@@ -527,6 +530,9 @@ func modelBoundRPCMethod(method string) bool {
 
 func (s *PooledService) markRetryableFailure(lease *AccountLease, modelAccessScope string, err error) error {
 	accountID := lease.Account().ID
+	if IsAccountVerificationRequired(err) {
+		return lease.MarkAccountVerificationRequired()
+	}
 	if DefinitiveAuthenticationFailure(err) {
 		return lease.MarkAuthenticationRequired(err.Error())
 	}
@@ -839,7 +845,9 @@ func forwardEventsWithLease(
 		}
 		if event.Kind == EventError {
 			terminal = true
-			if DefinitiveAuthenticationFailure(event.Err) {
+			if IsAccountVerificationRequired(event.Err) {
+				event.Err = errors.Join(event.Err, lease.MarkAccountVerificationRequired())
+			} else if DefinitiveAuthenticationFailure(event.Err) {
 				if err := lease.MarkAuthenticationRequired(event.Err.Error()); err != nil {
 					event.Err = errors.Join(event.Err, err)
 				}

@@ -224,7 +224,8 @@ function percent(balance: DisplayBalance | undefined): string {
                   scope="row"
                   class="max-w-28 truncate py-2 pr-2 text-left font-normal text-gray-400"
                 >
-                  <span v-if="account.exhausted_429" class="mr-1 text-amber-400">429</span>
+                  <span v-if="account.block_code === 'ACCOUNT_VERIFICATION_REQUIRED'" class="mr-1 text-red-400">403</span>
+                  <span v-else-if="account.exhausted_429 && !account.block_code" class="mr-1 text-amber-400">429</span>
                   {{ account.label }}
                 </th>
                 <td class="py-2 pl-2 text-right">{{ exact(used(account[metric.key])) }}</td>
@@ -233,6 +234,10 @@ function percent(balance: DisplayBalance | undefined): string {
                   :class="displayRemaining(account, metric.key) === 0 ? 'text-red-400' : 'text-gray-200'"
                 >
                   {{ exact(displayRemaining(account, metric.key)) }}
+                  <span v-if="account.block_code" class="mt-0.5 block text-[10px] font-normal whitespace-normal text-red-400">
+                    {{ t(account.block_code === 'ACCOUNT_VERIFICATION_REQUIRED' ? 'quota.verificationBlocked' :
+                      account.block_code === 'AUTH_REQUIRED' ? 'quota.authBlocked' : 'quota.accountBlocked') }}
+                  </span>
                   <span
                     v-if="limitedUnknown(account, metric.key)"
                     class="mt-0.5 block max-w-32 text-[10px] font-normal whitespace-normal text-gray-500"

@@ -347,6 +347,21 @@ async function loginAccount(account: Account): Promise<void> {
   }
 }
 
+async function clearAccountVerification(account: Account): Promise<void> {
+  const id = account.verification_id
+  if (!id || !window.confirm(t('quota.confirmVerification').replace('{name}', account.label))) return
+  pendingAction.value = `verification:${account.id}`
+  try {
+    await api.clearAccountVerification(account.id, id)
+    emit('refresh')
+    emit('notice', t('quota.verificationCleared'), 'success')
+  } catch (error) {
+    actionError(error)
+  } finally {
+    pendingAction.value = ''
+  }
+}
+
 // refreshNotice 返回刷新结果提示，写出权益与模型数的变化
 function refreshNotice(result: AccountRefresh): string {
   const change = (before: string, after: string) =>
@@ -563,7 +578,7 @@ async function refreshAllAccounts(): Promise<void> {
               {{ t(account.enabled ? 'common.disable' : 'common.enable') }}
             </button>
             <button
-              v-if="account.state === 'auth_required'"
+              v-if="account.state === 'auth_required' && !account.verification_id"
               class="rounded bg-green-600 px-3 py-1 text-xs text-white transition hover:bg-green-500 disabled:opacity-50"
               type="button"
               :disabled="pendingAction !== '' || refreshing.has(account.id) || !account.enabled"
@@ -571,6 +586,15 @@ async function refreshAllAccounts(): Promise<void> {
               @click="loginAccount(account)"
             >
               {{ t('common.relogin') }}
+            </button>
+            <button
+              v-if="account.verification_id"
+              class="rounded border border-line bg-raised px-3 py-1 text-xs text-gray-300 transition hover:bg-line disabled:opacity-50"
+              type="button"
+              :disabled="pendingAction !== '' || refreshing.has(account.id)"
+              @click="clearAccountVerification(account)"
+            >
+              {{ t('quota.confirmVerified') }}
             </button>
             <button
               class="rounded border border-line bg-raised px-3 py-1 text-xs text-gray-300 transition hover:bg-line disabled:opacity-50"

@@ -22,11 +22,12 @@ type QuotaBalance struct {
 }
 
 type QuotaMember struct {
-	ID      string
-	Label   string
-	Tier    string
-	State   string
-	Enabled bool
+	ID        string
+	Label     string
+	Tier      string
+	State     string
+	Enabled   bool
+	BlockCode string
 }
 
 type QuotaAccount struct {
@@ -35,6 +36,7 @@ type QuotaAccount struct {
 	Tier         string       `json:"tier"`
 	State        string       `json:"state"`
 	Included     bool         `json:"included"`
+	BlockCode    string       `json:"block_code,omitempty"`
 	Exhausted429 bool         `json:"exhausted_429"`
 	InFlight     int64        `json:"in_flight"`
 	Unreported   int64        `json:"unreported"`

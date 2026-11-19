@@ -514,6 +514,18 @@ func (admin *runtimeAdmin) RefreshAccount(_ context.Context, accountID string) (
 	}, nil
 }
 
+func (admin *runtimeAdmin) ClearAccountVerification(ctx context.Context, accountID, verificationID string) error {
+	lease, err := admin.pool.AcquireAccount(ctx, accountID)
+	if err != nil {
+		return accountOperationError(err)
+	}
+	err = errors.Join(lease.ClearAccountVerification(ctx, verificationID), lease.Release())
+	if aistudio.IsSessionFailureCode(err, "ACCOUNT_VERIFICATION_CHANGED") {
+		return &adminOperationError{status: http.StatusConflict, code: "account_verification_changed", message: "账号验证阻断已变化，请刷新确认"}
+	}
+	return accountOperationError(err)
+}
+
 // StartService 使用管理器提供的启动生命周期启动生成服务
 func (admin *runtimeAdmin) StartService(ctx context.Context) (api.AdminStatus, error) {
 	startedAt := time.Now()
@@ -691,7 +703,8 @@ func adminAccountDTO(status aistudio.AccountStatus, pool *aistudio.AccountPool) 
 	value := api.AdminAccount{
 		ID: status.ID, Label: status.Label, Enabled: status.Enabled, State: string(status.State),
 		Proxy: status.Proxy, Egress: status.Egress, Locale: status.Locale, Timezone: status.Timezone,
-		Models: models, BenefitTier: status.BenefitTier, Message: status.Message,
+		Models: models, BenefitTier: status.BenefitTier, Message: status.Message, BlockCode: status.BlockCode,
+		VerificationID: status.VerificationID,
 	}
 	account, err := pool.Account(status.ID)
 	if err != nil {
